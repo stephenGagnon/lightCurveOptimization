@@ -1,7 +1,8 @@
-module LMopt
+module lightCurveOptimization
 
+using LinearAlgebra
 using Parameters
-using Infiltrator
+#using Infiltrator
 using Random
 using Distances
 using StatsBase
@@ -10,8 +11,9 @@ using MATLAB
 using attitudeFunctions
 using Plots
 
-export costFuncGen, PSO_cluster, simpleScenario, simpleSatellite, F_true, randomAtt
-
+export costFuncGen, PSO_cluster, simpleScenario, simpleSatellite, F_true,
+    randomAtt, optimOptions, optimResults, targetObject, targetObjectFull,
+    scenario
 
 struct targetObject
     facetNo :: Int64
@@ -543,7 +545,6 @@ function Fobs(A :: Array{Float64,2},un :: Array{Float64,2}, uu :: Array{Float64,
     pspecnum = sqrt.((nu .+ 1).*(nv .+ 1)).*(Rspec .+ (1 .- Rspec).*(1 .- uh*usun).^5)./(8*pi).*
     (temp.^((nu.*(uh*uu).^2 .+ nv.*(uh*uv).^2)./(1 .- temp.^2)))
 
-    @infiltrate
     if any(isnan.(pspecnum))
         pspecnum[isnan.(pspecnum)] = sqrt.((nu .+ 1).*(nv .+ 1)).*
         (Rspec .+ (1 .- Rspec).*(1 .- uh*usun).^5)./(8*pi)[isnan.(pspecnum)]
