@@ -1,0 +1,4 @@
+name = "lightCurveOptimization"
+uuid = "080a2550-1630-41fe-8750-c8cca3fe9c02"
+authors = ["Stephen Gagnon <srgagnon@buffalo.edu>"]
+version = "0.1.0"
