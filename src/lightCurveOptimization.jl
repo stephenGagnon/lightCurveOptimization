@@ -1,18 +1,14 @@
 module LMopt
 
-include("./attitudeFunctions.jl")
-
 using Parameters
 using Infiltrator
 using Random
 using Distances
 using StatsBase
 using Clustering
-using RecursiveArrayTools
 using MATLAB
-using .attitudeFunctions: p2A, q2A, q2p, p2q, A2p, A2q, attitudeErrors
+using attitudeFunctions
 using Plots
-# include("")
 
 export costFuncGen, PSO_cluster, simpleScenario, simpleSatellite, F_true, randomAtt
 
