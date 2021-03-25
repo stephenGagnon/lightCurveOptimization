@@ -246,9 +246,7 @@ function simpleScenario()
     # usun -- vector from rso to sun (inertial)
     sunVec = [1.0 0 0]'
 
-    out = scenario(obsNo,C,obsDist,sunVec,obsVecs)
-
-    return out
+    return scenario(obsNo,C,obsDist,sunVec,obsVecs)
 end
 
 @with_kw struct optimOptions
@@ -662,38 +660,6 @@ function F_true(A :: Array{Float64,2}, obj :: targetObject, scen :: scenario)
 
     return Fobs(A,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
     obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
-end
-
-function randomAtt(N :: Int64)
-
-    val = lhs(3,N)
-
-    val[2:3,:] = val[2:3,:].*2*pi;
-
-    q = zeros(4,N)
-
-    q[1,:] = sqrt.(val[1,:]).*cos.(val[2,:])
-    q[2,:] = sqrt.(val[1,:]).*sin.(val[2,:])
-    q[3,:] = sqrt.(1 .- val[1,:]).*sin.(val[3,:])
-    q[4,:] = sqrt.(1 .- val[1,:]).*cos.(val[3,:])
-
-    return q
-end
-
-function randomAtt(N :: Int64, a, f)
-
-    qmat = randomAtt(N)
-    return mapslices((q)->q2p(q,a,f),qmat,dims=1)
-end
-
-function lhs(N :: Int64, d :: Int64)
-
-    x = rand(N,d)
-
-    x = x.*1/d .+ reshape((collect(0:d-1))./d,1,d)
-    x[x.>1] .= 1.0
-
-    return transpose(hcat([row[Random.randperm(d)] for row in eachrow(x)]...))
 end
 
 function analyzeResults(results :: optimResults)
