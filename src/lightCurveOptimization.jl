@@ -2,7 +2,7 @@ module lightCurveOptimization
 
 using LinearAlgebra
 using Parameters
-#using Infiltrator
+using Infiltrator
 using Random
 using Distances
 using StatsBase
@@ -11,7 +11,7 @@ using MATLAB
 using attitudeFunctions
 using Plots
 
-export costFuncGen, PSO_cluster, simpleScenario, simpleSatellite, F_true,
+export costFuncGen, PSO_cluster, simpleScenarioGenerator, Fobs_eval,
     randomAtt, optimOptions, optimResults, targetObject, targetObjectFull,
     scenario
 
@@ -51,11 +51,11 @@ struct scenario
     obsNo :: Int64
     C :: Float64
     d :: Union{Array{Float64,2},Array{Float64,1}}
-    sunVec :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    sunVec :: Array{Float64,1}
     obsVecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
 end
 
-function simpleSatellite(Type = "arrays")
+function simpleSatellite(repType = "Arrays")
 
 
     ## satellite bus
@@ -218,7 +218,7 @@ function simpleSatellite(Type = "arrays")
     # moment of Intertia about the COM
     J = J_tot  - (m_dish + m_bus + 2*m_SP).*((COM'*COM).*Matrix(1.0I,3,3) .- COM*COM')
 
-    if cmp(Type,"custom") == 0
+    if cmp(repType,"customAttitudeType") == 0
         Area = Area[:]
         nu = nu[:]
         nv = nv[:]
@@ -244,7 +244,7 @@ function simpleSatellite(Type = "arrays")
     return simpleStruct, fullStruct
 end
 
-function simpleScenario(Type = "arrays")
+function simpleScenario(repType = "Arrays")
 
     # C -- sun power per square meter
     C = 455.0 #W/m^2
@@ -264,23 +264,25 @@ function simpleScenario(Type = "arrays")
     obsVecs = obsVecs[:,1:obsNo]
 
     # usun -- vector from rso to sun (inertial)
-    sunVec = [1.0 0 0]'
+    sunVec = [1.0; 0; 0]
 
-    if cmp(Type,"custom") == 0
+    if cmp(repType,"customAttitudeType") == 0
         obsvectemp = obsVecs
         obsVecs = Array{Array{Float64,1},1}
-        sunvectemp = sunVecs
-        sunVecs = Array{Array{Float64,1},1}
 
         for i = 1:obsNo
             obsVecs[i] = obsvectemp[:,i]
-            sunVecs[i] = sunvectemp[:,i]
         end
 
         obsDist = obsDist[:]
     end
-
     return scenario(obsNo,C,obsDist,sunVec,obsVecs)
+end
+
+function simpleScenarioGenerator(repType = "Arrays")
+    (sat, satFull) = simpleSatellite(repType)
+    scenario = simpleScenario(repType)
+    return sat, satFull, scenario
 end
 
 @with_kw struct optimOptions
@@ -313,8 +315,7 @@ struct optimResults
     fOpt :: Float64
 end
 
-function PSO_cluster(costFunc :: Function, opt :: optimOptions,
-    x :: Array{Float64,2}, Ftrue :: Array{Float64,1})
+function PSO_cluster(costFunc :: Function, opt :: optimOptions, x :: Array{Float64,2})
 
     # number of design vairables
     n = size(x)[1]
@@ -457,56 +458,265 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions,
     return optimResults(xHist,fHist,xOptHist,fOptHist[:],xmin[:],fmin)
 end
 
+#in progress
+function PSO_cluster(costFunc :: Function, opt :: optimOptions,
+    x :: Array{Array{Float64,1},1})
+
+    # number of design vairables
+    n = length(x[1])
+
+    # create time vector for cooling and population reduction schedules
+    t = LinRange(0,1,opt.tmax)
+
+    # get the objective function values of the inital population
+    finit = costFunc(x)
+
+    # initialize the local best for each particle as its inital value
+    Plx = x
+    Plf = finit
+
+    # initialize clusters
+    out = kmeans(x,opt.Ncl)
+    ind = Clustering.assignments(out)
+
+    cl = 1:opt.Ncl
+
+    # intialize best local optima in each cluster
+    xopt = zeros(n,opt.Ncl)
+    fopt = zeros(1,opt.Ncl)
+
+    clLeadInd = Array{Int64,1}(undef,opt.Ncl)
+    # loop through the clusters
+    for j in cl
+        # find the best local optima in the cluster particles history
+        clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
+        xopt[:,j] = Plx[:,clLeadInd[j]]
+        fopt[:,j] = Plf[:,clLeadInd[j]]
+    end
+
+    # initilize global bests
+    Pgx = zeros(size(Plx))
+
+    # loop through all the particles
+    for j = 1:opt.N
+        # randomly choose to follow the local cluster best or another cluster
+        # best in proportion to the user specified epsilon
+        if rand(1)[1] < opt.evec[1] || any(j .== clLeadInd)
+            # follow the local cluster best
+            Pgx[:,j] = xopt[:,ind[j]]
+        else
+            # follow a random cluster best
+            Pgx[:,j] = xopt[:,cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]]
+        end
+    end
+
+    # store the best solution from the current iteration
+    xOptHist = zeros(n,opt.tmax)
+    fOptHist = zeros(1,opt.tmax)
+
+    optInd = argmin(fopt)[2]
+    xOptHist[:,1] = xopt[:,optInd]
+    fOptHist[:,1] = fopt[:,optInd]
+
+    # initalize particle and objective histories
+    xHist = zeros(size(x)...,opt.tmax)
+    fHist = zeros(size(finit)[2],opt.tmax)
+
+    xHist[:,:,1] = x
+    fHist[:,1] = finit
+
+    # inital particle velocity is zero
+    v = zeros(size(x));
+
+    # main loop
+    for i = 2:opt.tmax
+
+        # calculate alpha using the cooling schedule
+        a = opt.av[1]-t[i]*(opt.av[1]-opt.av[2])
+
+        # calculate epsilon using the schedule
+        epsilon = opt.evec[1] - t[i]*(opt.evec[1] - opt.evec[2])
+
+        # calcualte the velocity
+        r = rand(1,2);
+        v = a*v .+ r[1].*(opt.bl).*(Plx - x) .+ r[2]*(opt.bg).*(Pgx - x)
+
+        # update the particle positions
+        x = x .+ v
+
+        # enforce spacial limits on particles
+        xn = sqrt.(sum(x.^2,dims=1))
+        x[:,vec(xn .> opt.Lim)] = opt.Lim .* (x./xn)[:,vec(xn.> opt.Lim)]
+
+        # store the current particle population
+        xHist[:,:,i] = x
+
+        # evalue the objective function for each particle
+        f = costFunc(x)
+
+        # store the objective values for the current generation
+        fHist[:,i] = f
+
+        # update the local best for each particle
+        indl = findall(f[:] .< Plf[:])
+        Plx[:,indl] = x[:,indl]
+        Plf[:,indl] = f[indl]
+
+        # on the appropriate iterations, update the clusters
+        if mod(i+opt.clI-2,opt.clI) == 0
+            out = kmeans(x,opt.Ncl)
+            ind = Clustering.assignments(out)
+            #cl = 1:opt.Ncl;
+        end
+
+        # loop through the clusters
+        for j in cl
+            # find the best local optima in the cluster particles history
+            clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
+
+            xopt[:,j] = Plx[:,clLeadInd[j]]
+            fopt[:,j] = Plf[:,clLeadInd[j]]
+        end
+
+        # loop through all the particles
+        for j = 1:opt.N
+            # randomly choose to follow the local cluster best or another cluster
+            # best in proportion to the user specified epsilon
+            if rand(1)[1] < epsilon || sum(j == clLeadInd) > 0
+                # follow the local cluster best
+                Pgx[:,j] = xopt[:,ind[j]];
+            else
+                # follow a random cluster best
+                Pgx[:,j] = xopt[:,cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]]
+            end
+        end
+
+        # store the best solution from the current iteration
+        optInd = argmin(fopt)[2]
+        xOptHist[:,i] = xopt[:,optInd]
+        fOptHist[i] = fopt[optInd]
+    end
+
+    fmin = min(fOptHist...)
+    xmin = xOptHist[:,findall(fOptHist[end,:] .== fmin)[end]]
+
+    return optimResults(xHist,fHist,xOptHist,fOptHist[:],xmin[:],fmin)
+end
+
 function MPSO_cluster(costFunc :: Function, opt :: optimOptions,
-    x :: Array{Float64,2}, Ftrue :: Array{Float64,1})
+    x :: Array{Float64,2})
 end
 
 function costFuncGen(obj :: targetObject, scen :: scenario,
-    Ftrue :: Array{Float64,1}, a, f)
+    attitude :: Union{Array{Float64,2},Array{Float64,1},quaternion,MRP,GRP,DCM},
+    repType = "Arrays", a = 1.0, f = 1.0)
 
-    return func = (p) -> LMC_MRP(obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,
-    obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C,p,a,f,Ftrue)
+    if (typeof(attitude) == Array{Float64,1}) & (length(attitude) == 3)
+        Ftrue = Fobs_eval(attitude, obj, scen, "GRP", a , f)
+        attType = "GRP"
+    elseif (typeof(attitude) == Array{Float64,1}) & (length(attitude) == 4)
+        Ftrue = Fobs_eval(attitude, obj, scen, "quaternion")
+        attType = "quaternion"
+    elseif (typeof(attitude) == Array{Float64,2}) & (size(attitude) == (3,3))
+        Ftrue = Fobs_eval(attitude, obj, scen, "DCM")
+        attType = "DCM"
+    elseif typeof(attitude) <: Union{DCM,MRP,GRP,quaternion}
+        Ftrue = Fobs_eval(attitude, obj, scen)
+    end
+
+    if cmp(repType,"Arrays") == 0
+        return func = (att) -> LMC(obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,
+        obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C,att,Ftrue,
+        a=a,f=f,attType=attType)
+    elseif cmp(repType,"CustomAttitudeTypes") == 0
+        return func = (att) -> LMC(obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,
+        obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C,att,Ftrue)
+    else
+        throw(error("Please Provide Valid representation type"))
+    end
 end
 
-function costFuncGen(obj :: targetObject, scen :: scenario,
-    Ftrue :: Array{Float64,1})
-
-    return func = (q) -> LMC_Q(obj.nvecs,obj.uvecs,obj.vvecs,obj.Area,obj.nu,obj.nv,obj.Rdiff,
-    obj.Rspec,scen.sunVec,scen.obsVec,scen.d,scen.C,q,Ftrue)
-end
-
-function LMC_MRP(un :: Array{Float64,2}, uu :: Array{Float64,2}, uv :: Array{Float64,2},
+function LMC(un :: Array{Float64,2}, uu :: Array{Float64,2}, uv :: Array{Float64,2},
     Area :: Array{Float64,2}, nu :: Array{Float64,2}, nv :: Array{Float64,2},
-    Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2}, usun :: Array{Float64,2},
-    uobs :: Array{Float64,2}, d :: Array{Float64,2}, C :: Float64, pmat :: Array{Float64,2},
-    a, f, Ftrue :: Array{Float64,1})
+    Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2}, usun :: Array{Float64,1},
+    uobs :: Array{Float64,2}, d :: Array{Float64,2}, C :: Float64,
+    attitudes :: Union{Array{Float64,2},Array{Float64,3}}, Ftrue :: Array{Float64,1};
+    a=1.0, f=1.0, attType = "MRP")
 
-    F = zeros(size(uobs)[2],size(pmat)[2])
+    if (cmp(attType,"MRP") == 0) | (cmp(attType,"GRP") == 0)
+        F = zeros(size(uobs)[2],size(attitudes)[2])
 
-    for i = 1:size(pmat)[2]
-        A = p2A(pmat[:,i],a,f)
-        F[:,i] = Fobs(A,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+        for i = 1:size(attitudes)[2]
+            F[:,i] = Fobs(p2A(attitudes[:,i],a,f),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+        end
+    elseif cmp(attType,"quaternion") == 0
+        F = zeros(size(uobs)[2],size(attitudes)[2])
+
+        for i = 1:size(attitudes)[2]
+            F[:,i] = Fobs(q2A(attitudes[:,i]),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+        end
+    elseif cmp(attType,"DCM") == 0
+        F = zeros(size(uobs)[2],size(attitudes)[2])
+
+        for i = 1:size(attitudes)[2]
+            F[:,i] = Fobs(attitudes[:,:,i],un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+        end
+    else
+        @infiltrate
     end
     return sum(((F .- Ftrue)./(Ftrue .+ 1e-50)).^2,dims=1)
 end
 
-function LMC_Q(un :: Array{Float64,2}, uu :: Array{Float64,2}, uv :: Array{Float64,2},
-    Area :: Array{Float64,2}, nu :: Array{Float64,2}, nv :: Array{Float64,2},
-    Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2}, usun :: Array{Float64,2},
-    uobs :: Array{Float64,2}, d :: Array{Float64,2}, C :: Float64, qmat :: Array{Float64,2},
+function LMC(un :: Array{Array{Float64,1},1}, uu :: Array{Array{Float64,1},1},
+    uv :: Array{Array{Float64,1},1}, Area :: Array{Float64,1},
+    nu :: Array{Float64,1}, nv :: Array{Float64,1}, Rdiff :: Array{Float64,1},
+    Rspec :: Array{Float64,1}, usun :: Array{Array{Float64,1},1},
+    uobs :: Array{Array{Float64,1},1}, d :: Array{Float64,1}, C :: Float64,
+    attitudes :: Union{Array{quaternion,1},Array{MRP,1},Array{GRP,1},Array{DCM,1}},
     Ftrue :: Array{Float64,1})
 
-    cost = zeros(size(qmat)[2],1)
-
-    for i = 1:size(qmat)[2]
-        A = q2A(qmat(:,i))
-        F[i,:] = Fobs(A,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
-    end
 
 
-    return cost = [sum(((Fr-Ftrue)./[Ftrue .+ 1e-50]).^2) for Fr in eachcol(F)]
-    #return cost = [Fobs(p2A(p,a,f),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C) for p in eachcol(pmat)]
+    # if cmp(Type,"MRP") == 0 | cmp(Type,"GRP") == 0
+    #     F = zeros(length(uobs),length(attitudes))
+    #
+    #     for i = 1:length(attitudes)
+    #         F[:,i] = Fobs(p2A(attitudes[i]),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+    #     end
+    # elseif cmp(Type,"quaternion") == 0
+    #     F = zeros(length(uobs),length(attitudes))
+    #
+    #     for i = 1:length(attitudes)
+    #         F[:,i] = Fobs(q2A(attitudes[i]),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+    #     end
+    # elseif cmp(Type,"DCM") == 0
+    #     F = zeros(length(uobs),length(attitudes))
+    #
+    #     for i = 1:size(attitudes)[2]
+    #         F[:,i] = Fobs(attitudes[i],un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+    #     end
+    # end
+    F = broadcast((x)->Fobs(x,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C),any2A(attitudes))
+    return sum(((F - Ftrue)./(Ftrue .+ 1e-50)).^2,dims=1)
 end
+
+# function LMC_Q(un :: Array{Float64,2}, uu :: Array{Float64,2}, uv :: Array{Float64,2},
+#     Area :: Array{Float64,2}, nu :: Array{Float64,2}, nv :: Array{Float64,2},
+#     Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2}, usun :: Array{Float64,2},
+#     uobs :: Array{Float64,2}, d :: Array{Float64,2}, C :: Float64, qmat :: Array{Float64,2},
+#     Ftrue :: Array{Float64,1})
+#
+#     cost = zeros(size(qmat)[2],1)
+#
+#     for i = 1:size(qmat)[2]
+#         A = q2A(qmat(:,i))
+#         F[i,:] = Fobs(A,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+#     end
+#
+#
+#     return cost = [sum(((Fr-Ftrue)./[Ftrue .+ 1e-50]).^2) for Fr in eachcol(F)]
+#     #return cost = [Fobs(p2A(p,a,f),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C) for p in eachcol(pmat)]
+# end
 
 """
   Fraction of visible light that strikes a facet and is reflected to the
@@ -542,10 +752,10 @@ end
 
   CODE -----------------------------------------------------------------
 """
-function Fobs(A :: Array{Float64,2},un :: Array{Float64,2}, uu :: Array{Float64,2},
+function Fobs(A :: Array{Float64,2}, un :: Array{Float64,2}, uu :: Array{Float64,2},
     uv :: Array{Float64,2}, Area :: Array{Float64,2}, nu :: Array{Float64,2},
     nv :: Array{Float64,2}, Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2},
-    usunI :: Array{Float64,2}, uobsI :: Array{Float64,2}, d :: Array{Float64,2},
+    usunI :: Array{Float64,1}, uobsI :: Array{Float64,2}, d :: Array{Float64,2},
     C :: Float64)
 
 
@@ -599,7 +809,7 @@ function Fobs(A :: Array{Float64,2},un :: Array{Float64,2}, uu :: Array{Float64,
     return Ftotal[:]
 end
 
-function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
+function Fobs(A :: DCM, unm :: Array{Array{Float64,1},1},
     uum :: Array{Array{Float64,1},1}, uvm :: Array{Array{Float64,1},1},
     Area :: Array{Float64,1}, nu :: Array{Float64,1}, nv :: Array{Float64,1},
     Rdiff :: Array{Float64,1}, Rspec :: Array{Float64,1},
@@ -608,7 +818,8 @@ function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
 
     Ftotal = Array{Float64,1}(undef,size(uobsI,2))
 
-    usun = A*usunI
+    usun = A.A*usunI
+
     for i = 1:length(un)
         un = unm[i]
         uv = uvm[i]
@@ -657,9 +868,16 @@ function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
     return Ftotal
 end
 
-function F_true(A :: Array{Float64,2}, obj :: targetObject, scen :: scenario)
+function Fobs_eval(A :: Union{DCM,MRP,GRP,quaternion}, obj :: targetObject, scen :: scenario)
 
-    return Fobs(A,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
+    return Fobs(any2A(A).A,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
+    obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
+end
+
+function Fobs_eval(A :: Union{Array{Float64,2},Array{Float64,1}},
+     obj :: targetObject, scen :: scenario, Type = "MRP", a = 1.0, f = 1.0)
+
+    return Fobs(any2A(A,Type,a,f),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
     obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
 end
 
