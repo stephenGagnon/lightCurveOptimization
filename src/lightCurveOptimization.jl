@@ -19,43 +19,43 @@ struct targetObject
     facetNo :: Int64
     # vertices :: Array{Float64,2}
     # vertList
-    Areas :: Array{Float64,2}
-    nvecs :: Array{Float64,2}
-    vvecs :: Array{Float64,2}
-    uvecs :: Array{Float64,2}
-    nu :: Array{Float64,2}
-    nv :: Array{Float64,2}
-    Rdiff :: Array{Float64,2}
-    Rspec :: Array{Float64,2}
+    Areas :: Union{Array{Float64,2},Array{Float64,1}}
+    nvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    vvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    uvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    nu :: Union{Array{Float64,2},Array{Float64,1}}
+    nv :: Union{Array{Float64,2},Array{Float64,1}}
+    Rdiff :: Union{Array{Float64,2},Array{Float64,1}}
+    Rspec :: Union{Array{Float64,2},Array{Float64,1}}
     J :: Array{Float64,2}
-    bodyFrame :: Array{Float64,2}
+    bodyFrame :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
 end
 
 struct targetObjectFull
     facetNo :: Int64
     vertices :: Array{Float64,2}
     vertList
-    Areas :: Array{Float64,2}
-    nvecs :: Array{Float64,2}
-    vvecs :: Array{Float64,2}
-    uvecs :: Array{Float64,2}
-    nu :: Array{Float64,2}
-    nv :: Array{Float64,2}
-    Rdiff :: Array{Float64,2}
-    Rspec :: Array{Float64,2}
+    Areas :: Union{Array{Float64,2},Array{Float64,1}}
+    nvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    vvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    uvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    nu :: Union{Array{Float64,2},Array{Float64,1}}
+    nv :: Union{Array{Float64,2},Array{Float64,1}}
+    Rdiff :: Union{Array{Float64,2},Array{Float64,1}}
+    Rspec :: Union{Array{Float64,2},Array{Float64,1}}
     J :: Array{Float64,2}
-    bodyFrame :: Array{Float64,2}
+    bodyFrame :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
 end
 
 struct scenario
     obsNo :: Int64
     C :: Float64
-    d :: Array{Float64,2}
-    sunVec :: Array{Float64,2}
-    obsVecs :: Array{Float64,2}
+    d :: Union{Array{Float64,2},Array{Float64,1}}
+    sunVec :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    obsVecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
 end
 
-function simpleSatellite()
+function simpleSatellite(Type = "arrays")
 
 
     ## satellite bus
@@ -218,13 +218,33 @@ function simpleSatellite()
     # moment of Intertia about the COM
     J = J_tot  - (m_dish + m_bus + 2*m_SP).*((COM'*COM).*Matrix(1.0I,3,3) .- COM*COM')
 
+    if cmp(Type,"custom") == 0
+        Area = Area[:]
+        nu = nu[:]
+        nv = nv[:]
+        Rdiff = Rdiss[:]
+        Rspec = Rspec[:]
+        nvecstemp = nvecs
+        nvecs = Array{Array{Float64,1},1}
+        uvecstemp = uvecs
+        uvecs = Array{Array{Float64,1},1}
+        vvecstemp = vvecs
+        vvecs = Array{Array{Float64,1},1}
+
+        for i = 1:facetNo
+            nvecs[i] = nvecstemp[:,i]
+            uvecs[i] = uvecstemp[:,i]
+            vvecs[i] = vvecstemp[:,i]
+        end
+    end
+
     simpleStruct = targetObject(facetNo,Area,nvecs,vvecs,uvecs,nu,nv,Rdiff,Rspec,J,bodyFrame)
     fullStruct = targetObjectFull(facetNo,vertices,facetVerticesList,Area,nvecs,
     vvecs,uvecs,nu,nv,Rdiff,Rspec,J,bodyFrame)
     return simpleStruct, fullStruct
 end
 
-function simpleScenario()
+function simpleScenario(Type = "arrays")
 
     # C -- sun power per square meter
     C = 455.0 #W/m^2
@@ -245,6 +265,20 @@ function simpleScenario()
 
     # usun -- vector from rso to sun (inertial)
     sunVec = [1.0 0 0]'
+
+    if cmp(Type,"custom") == 0
+        obsvectemp = obsVecs
+        obsVecs = Array{Array{Float64,1},1}
+        sunvectemp = sunVecs
+        sunVecs = Array{Array{Float64,1},1}
+
+        for i = 1:obsNo
+            obsVecs[i] = obsvectemp[:,i]
+            sunVecs[i] = sunvectemp[:,i]
+        end
+
+        obsDist = obsDist[:]
+    end
 
     return scenario(obsNo,C,obsDist,sunVec,obsVecs)
 end
@@ -359,7 +393,7 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions,
 
         # calcualte the velocity
         r = rand(1,2);
-        v = a*v .+ r[1].*opt.bl.*(Plx - x) .+ r[2]*opt.bg.*(Pgx .- x)
+        v = a*v .+ r[1].*(opt.bl).*(Plx - x) .+ r[2]*(opt.bg).*(Pgx - x)
 
         # update the particle positions
         x = x .+ v
@@ -572,39 +606,6 @@ function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
     usunI :: Array{Float64,1}, uobsI :: Array{Array{Float64,1},1},
     d :: Array{Float64,1}, C :: Float64)
 
-    #   Fraction of visible light that strikes a facet and is reflected to the
-    #   observer
-    #
-    # INPUTS ---------------------------------------------------------------
-    #
-    #   A -- the attitude matrix (inertial to body)
-    #
-    #   geometry -- a structure containg various parameters describing the
-    #   relative possitions and directions of the observer and sun in the
-    #   inertial frame. The comonenets are as follows:
-    #
-    #   usun -- vector from rso to sun (inertial)
-    #   uobs -- vector from rso to the jth observer (inertial)
-    #   d -- distance from rso to observer j
-    #   C -- sun power per square meter
-    #
-    #   facet -- a structure contining various parameters describing the facet
-    #   being observed
-    #
-    #   Area -- facet area
-    #   unb -- surface normal of the ith facet (body frame)
-    #   uub,uvn body -- in plane body vectors completing the right hand rule
-    #   Rdiff,Rspec -- spectral and diffusion parameters of the facet
-    #   nv,nu -- coefficients to determine the in-plane distribution of
-    #   spectral reflection
-    #
-    # OUTPUTS --------------------------------------------------------------
-    #
-    #   F -- total reflectance (Fobs)
-    #
-    #   ptotal -- total brightness (rho)
-    #
-    #   CODE -----------------------------------------------------------------
     Ftotal = Array{Float64,1}(undef,size(uobsI,2))
 
     usun = A*usunI
