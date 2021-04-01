@@ -521,8 +521,6 @@ function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
     return PSO_results(xHist,fHist,xOptHist,fOptHist,xOptHist[:,end],fOptHist[end])
 end
 
-#in progress -- opperates on vectors of custom attitude types rather than on a 2D
-# array where each collum is a particle
 function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
     x :: Union{Array{MRP,1},Array{GRP,1}})
 
@@ -689,7 +687,7 @@ function costFuncGen(obj :: targetObject, scen :: spaceScenario,
     trueAttitude :: Union{Array{Float64,2},Array{Float64,1},quaternion,MRP,GRP,DCM},
     options :: optimizationOptions, a = 1.0, f = 1.0)
 
-    Ftrue = Fobs_eval(trueAttitude, obj, scen, a , f)
+    Ftrue = Fobs(trueAttitude, obj, scen, a , f)
 
     if !options.customTypes
         if (options.Parameterization == MRP) | (options.Parameterization == GRP)
@@ -910,63 +908,6 @@ function Fobs(A :: Array{Float64,2}, un :: Array{Float64,2}, uu :: Array{Float64
     return Ftotal[:]
 end
 
-# function Fobs(A :: DCM, un :: Array{Float64,2}, uu :: Array{Float64,2},
-#     uv :: Array{Float64,2}, Area :: Array{Float64,2}, nu :: Array{Float64,2},
-#     nv :: Array{Float64,2}, Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2},
-#     usunI :: Array{Float64,1}, uobsI :: Array{Float64,2}, d :: Array{Float64,2},
-#     C :: Float64)
-#
-#
-#
-#     usun = A.A*usunI
-#     uobs = A.A*uobsI
-#
-#     check1 = usun'*un .<= 0
-#     check2 = uobs'*un .<= 0
-#     visFlag = check1 .| check2
-#
-#     # calculate the half angle vector
-#     uh = transpose((usun .+ uobs)./sqrt.(2 .+ 2*usun'*uobs))
-#     # precalculate some dot products to save time
-#     usdun = usun'*un
-#     uodun = uobs'*un
-#
-#     # diffuse reflection
-#     pdiff = ((28*Rdiff)./(23*pi)).*(1 .- Rspec).*(1 .- (1 .- usdun./2).^5).*
-#     (1 .- (1 .- uodun./2).^5)
-#
-#     # spectral reflection
-#
-#     # calculate numerator and account for the case where the half angle
-#     # vector lines up with the normal vector
-#     temp = (uh*un)
-#     temp[visFlag] .= 0
-#
-#     pspecnum = sqrt.((nu .+ 1).*(nv .+ 1)).*(Rspec .+ (1 .- Rspec).*(1 .- uh*usun).^5)./(8*pi).*
-#     (temp.^((nu.*(uh*uu).^2 .+ nv.*(uh*uv).^2)./(1 .- temp.^2)))
-#
-#     if any(isnan.(pspecnum))
-#         pspecnum[isnan.(pspecnum)] = sqrt.((nu .+ 1).*(nv .+ 1)).*
-#         (Rspec .+ (1 .- Rspec).*(1 .- uh*usun).^5)./(8*pi)[isnan.(pspecnum)]
-#     end
-#
-#
-#     # fraction of visibile light for all observer/facet combinations
-#     F = C./(d'.^2).*(pspecnum./(usdun .+ uodun .- (usdun).*(uodun)) .+ pdiff).*(usdun).*Area.*(uodun)
-#     F[visFlag] .= 0
-#
-#     # Ftotal = Array{Float64,1}(undef,size(F)[1])
-#     Ftotal = zeros(size(F)[1],1)
-#     for i = 1:size(F,1)
-#         for j = 1:size(F,2)
-#             Ftotal[i] += F[i,j]
-#         end
-#     end
-#     # Ftotal = sum(F,dims=2)
-#
-#     return Ftotal[:]
-# end
-
 function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
     uum :: Array{Array{Float64,1},1}, uvm :: Array{Array{Float64,1},1},
     Area :: Array{Float64,1}, nu :: Array{Float64,1}, nv :: Array{Float64,1},
@@ -1034,74 +975,7 @@ function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
     return Ftotal
 end
 
-# function Fobs(A :: DCM, unm :: Array{Array{Float64,1},1},
-#     uum :: Array{Array{Float64,1},1}, uvm :: Array{Array{Float64,1},1},
-#     Area :: Array{Float64,1}, nu :: Array{Float64,1}, nv :: Array{Float64,1},
-#     Rdiff :: Array{Float64,1}, Rspec :: Array{Float64,1},
-#     usunI :: Array{Float64,1}, uobsI :: Array{Array{Float64,1},1},
-#     d :: Array{Float64,1}, C :: Float64)
-#
-#     Ftotal = Array{Float64,1}(undef,length(uobsI))
-#
-#     usun = A.A*usunI
-#     uobst = Array{Array{Float64,1},1}(undef,length(uobsI))
-#     for i = 1:length(uobsI)
-#         uobst[i] = A.A * uobsI[i]
-#     end
-#
-#     for i = 1:length(unm)
-#         un = unm[i]
-#         uv = uvm[i]
-#         uu = uum[i]
-#
-#         for j = 1:length(uobsI)
-#             uobs = uobst[j]
-#
-#             check1 = usun'*un <= 0
-#             check2 = uobs'*un <= 0
-#             visFlag = check1 | check2
-#
-#             if visFlag
-#                 F = 0
-#             else
-#                 # calculate the half angle vector
-#                 uh = ((usun + uobs)./sqrt(2 + 2*usun'*uobs))'
-#
-#                 # precalculate some dot products to save time
-#                 usdun = usun'*un
-#                 uodun = uobs'*un
-#
-#                 # diffuse reflection
-#                 pdiff = ((28*Rdiff[i])/(23*pi))*(1 - Rspec[i])*(1 - (1 - usdun/2)^5)*
-#                 (1 - (1 - uodun/2)^5)
-#
-#                 # spectral reflection
-#
-#                 # calculate numerator and account for the case where the half angle
-#                 # vector lines up with the normal vector
-#
-#                 if (1-uh*un)==0
-#                     pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1))*
-#                     (Rspec[i] + (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)
-#                 else
-#                     pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1))*(Rspec[i] +
-#                     (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)*
-#                     ((uh*un)^((nu[i]*(uh*uu)^2 + nv[i]*(uh*uv)^2)/(1 - (uh*un)^2)))
-#                 end
-#
-#                 Ftotal[j] += C/(d[j]^2)*(pspecnum/(usdun + uodun - (usdun)*(uodun)) +
-#                 pdiff)*(usdun)*Area[i]*(uodun)
-#             end
-#
-#         end
-#     end
-#
-#     # sum(F,dims=2)
-#
-#     return Ftotal
-# end
-
-function Fobs_eval(A :: Union{Array{Float64,2},Array{Float64,1},DCM,MRP,GRP,quaternion},
+function Fobs(A :: Union{Array{Float64,2},Array{Float64,1},DCM,MRP,GRP,quaternion},
     obj :: targetObject, scen :: spaceScenario, a=1, f=1)
 
     if (typeof(A) == Array{Float64,1}) & (length(A) == 3)
