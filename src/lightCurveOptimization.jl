@@ -931,19 +931,29 @@ function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
         for j = 1:length(uobsI)
             uobs = uobst[j]
 
-            check1 = usun'*un <= 0
-            check2 = uobs'*un <= 0
+            check1 = dot(usun,un) <= 0
+            check2 = dot(uobs,un) <= 0
             visFlag = check1 | check2
 
             if visFlag
                 F = 0
             else
                 # calculate the half angle vector
-                uh = ((usun + uobs)./sqrt(2 + 2*dot(usun,uobs)))'
+                # uh = (usun + uobs)./norm(usun + uobs)
+                # uh = Array{Float64,1}(undef,3)
+                # # usduo = dot(usun,uobs)
+                # # uh[1] = (usun[1] + uobs[1])/sqrt(2 + 2*usduo)
+                # # uh[2] = (usun[2] + uobs[2])/sqrt(2 + 2*usduo)
+                # # uh[3] = (usun[3] + uobs[3])/sqrt(2 + 2*usduo)
+                uh = Array{Float64,1}(undef,3)
+                den = sqrt(dot(usun,uobs))
+                uh[1] = (usun[1] + uobs[1])/den
+                uh[2] = (usun[2] + uobs[2])/den
+                uh[3] = (usun[3] + uobs[3])/den
 
                 # precalculate some dot products to save time
-                usdun = usun'*un
-                uodun = uobs'*un
+                usdun = dot(usun,un)
+                uodun = dot(uobs,un)
 
                 # diffuse reflection
                 pdiff = ((28*Rdiff[i])/(23*pi))*(1 - Rspec[i])*(1 - (1 - usdun/2)^5)*
@@ -954,13 +964,13 @@ function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
                 # calculate numerator and account for the case where the half angle
                 # vector lines up with the normal vector
 
-                if (1-uh*un)==0
+                if (1-dot(uh,un))==0
                     pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1))*
-                    (Rspec[i] + (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)
+                    (Rspec[i] + (1 - Rspec[i])*(1 - dot(uh,usun))^5)/(8*pi)
                 else
                     pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1))*(Rspec[i] +
-                    (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)*
-                    ((uh*un)^((nu[i]*(uh*uu)^2 + nv[i]*(uh*uv)^2)/(1 - (uh*un)^2)))
+                    (1 - Rspec[i])*(1 - dot(uh,usun))^5)/(8*pi)*
+                    (dot(uh,un)^((nu[i]*dot(uh,uu)^2 + nv[i]*dot(uh,uv)^2)/(1 - dot(uh,un)^2)))
                 end
 
                 Ftotal[j] += C/(d[j]^2)*(pspecnum/(usdun + uodun - (usdun)*(uodun)) +
