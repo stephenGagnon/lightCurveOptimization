@@ -6,14 +6,15 @@ using Infiltrator
 using Random
 using Distances
 using StatsBase
-using Clustering
 using MATLAB
 using attitudeFunctions
 using Plots
 
+import Clustering: kmeans, kmedoids, assignments
+
 export costFuncGen, PSO_cluster, simpleScenarioGenerator, Fobs_eval,
-    randomAtt, optimOptions, optimResults, targetObject, targetObjectFull,
-    scenario
+    optimizationOptions, optimizationResults, targetObject, kmeans,
+    targetObjectFull, spaceScenario, attitudePSO_Main, PSO_parameters, PSO_results
 
 struct targetObject
     facetNo :: Int64
@@ -47,7 +48,7 @@ struct targetObjectFull
     bodyFrame :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
 end
 
-struct scenario
+struct spaceScenario
     obsNo :: Int64
     C :: Float64
     d :: Union{Array{Float64,2},Array{Float64,1}}
@@ -55,7 +56,7 @@ struct scenario
     obsVecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
 end
 
-function simpleSatellite(repType = "Arrays")
+function simpleSatellite(;vectorized = false)
 
 
     ## satellite bus
@@ -218,18 +219,18 @@ function simpleSatellite(repType = "Arrays")
     # moment of Intertia about the COM
     J = J_tot  - (m_dish + m_bus + 2*m_SP).*((COM'*COM).*Matrix(1.0I,3,3) .- COM*COM')
 
-    if cmp(repType,"customAttitudeType") == 0
+    if !vectorized
         Area = Area[:]
         nu = nu[:]
         nv = nv[:]
-        Rdiff = Rdiss[:]
+        Rdiff = Rdiff[:]
         Rspec = Rspec[:]
         nvecstemp = nvecs
-        nvecs = Array{Array{Float64,1},1}
+        nvecs = Array{Array{Float64,1},1}(undef,size(nvecstemp,2))
         uvecstemp = uvecs
-        uvecs = Array{Array{Float64,1},1}
+        uvecs = Array{Array{Float64,1},1}(undef,size(nvecstemp,2))
         vvecstemp = vvecs
-        vvecs = Array{Array{Float64,1},1}
+        vvecs = Array{Array{Float64,1},1}(undef,size(nvecstemp,2))
 
         for i = 1:facetNo
             nvecs[i] = nvecstemp[:,i]
@@ -244,7 +245,7 @@ function simpleSatellite(repType = "Arrays")
     return simpleStruct, fullStruct
 end
 
-function simpleScenario(repType = "Arrays")
+function simpleScenario(;vectorized = false)
 
     # C -- sun power per square meter
     C = 455.0 #W/m^2
@@ -266,9 +267,9 @@ function simpleScenario(repType = "Arrays")
     # usun -- vector from rso to sun (inertial)
     sunVec = [1.0; 0; 0]
 
-    if cmp(repType,"customAttitudeType") == 0
+    if !vectorized
         obsvectemp = obsVecs
-        obsVecs = Array{Array{Float64,1},1}
+        obsVecs = Array{Array{Float64,1},1}(undef,size(obsvectemp,2))
 
         for i = 1:obsNo
             obsVecs[i] = obsvectemp[:,i]
@@ -276,16 +277,16 @@ function simpleScenario(repType = "Arrays")
 
         obsDist = obsDist[:]
     end
-    return scenario(obsNo,C,obsDist,sunVec,obsVecs)
+    return spaceScenario(obsNo,C,obsDist,sunVec,obsVecs)
 end
 
-function simpleScenarioGenerator(repType = "Arrays")
-    (sat, satFull) = simpleSatellite(repType)
-    scenario = simpleScenario(repType)
+function simpleScenarioGenerator(;vectorized = false)
+    (sat, satFull) = simpleSatellite(vectorized = vectorized )
+    scenario = simpleScenario(vectorized  = vectorized)
     return sat, satFull, scenario
 end
 
-@with_kw struct optimOptions
+@with_kw struct PSO_parameters
     # vector contining min and max alpha values for cooling schedule
     av :: Array{Float64,1} = [.6; .2]
     # local and global optimum velocity coefficients
@@ -306,16 +307,81 @@ end
     Lim :: Float64 = 1.0
 end
 
-struct optimResults
-    xHist :: Array{Float64,3}
-    fHist :: Array{Float64,2}
-    xOptHist :: Array{Float64,2}
+struct PSO_results
+    xHist :: Union{Array{Float64,3}, Array{Array{Float64,2},1}, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1}}
+    fHist :: Union{Array{Float64,2}, Array{Array{Float64,1},1}}
+    xOptHist :: Union{Array{Float64,2}, Array{Array{Float64,1},1},Array{MRP,1}, Array{GRP,1}, Array{quaternion,1}, Array{DCM,1}}
     fOptHist :: Array{Float64,1}
-    xOpt :: Array{Float64,1}
+    xOpt :: Union{Array{Float64,1},MRP,GRP,quaternion,DCM}
     fOpt :: Float64
 end
 
-function PSO_cluster(costFunc :: Function, opt :: optimOptions, x :: Array{Float64,2})
+@with_kw struct optimizationOptions
+    # set whether the optimizer represents attitudes as 1D arrays of custom types
+    # or as 2D arrays where columns correspond to attitudes
+    customTypes = true
+    # set the attitude parameterization that defines the search space of the
+    #optimization
+    Parameterization = MRP
+    # determines whether cost function is vectorized or evaluated in loops
+    vectorized = false
+    # choose whether the multiplicative PSO is used
+    useMultiplicative = false
+    # choose method for particle initialization
+    initMethod = "random"
+end
+
+struct optimizationResults
+
+    results :: PSO_results
+    object :: targetObject
+    objectFullData :: targetObjectFull
+    scenario :: spaceScenario
+    PSO_params :: PSO_parameters
+    trueAttitude
+    options :: optimizationOptions
+end
+
+function attitudePSO_Main(trueAttitude, params :: PSO_parameters,
+        options = optimizationOptions() :: optimizationOptions, a = 1.0 , f = 1.0;
+        object = "simple satellite", scenario = "simple scenario",
+        initialParticleDistribution = 0)
+
+    if cmp(object,"simple satellite") == 0
+        (sat, satFull) = simpleSatellite(vectorized = options.vectorized)
+    else
+        error("Please Provide valid object specifiction. Options are:
+        'simple satellite'")
+    end
+
+    if cmp(scenario,"simple scenario") == 0
+        scen = simpleScenario(vectorized = options.vectorized)
+    else
+        error("Please Provide valid object specifiction. Options are:
+        'simple scenario'")
+    end
+
+    costFunc = costFuncGen(sat,scen,trueAttitude,options,a,f)
+
+    if cmp(options.initMethod,"random") == 0
+        xinit = randomAtt(params.N,options.parameterization,options.customTypes)
+    elseif cmp(options.initMethod,"specified") == 0
+        xinit = initialParticleDistribution
+    else
+        error("Please provide valid particle initialization method")
+    end
+
+    if options.useMultiplicative
+        results = MPSO_cluster(costFunc,params,xinit)
+    else
+        results = PSO_cluster(costFunc,params,xinit)
+    end
+
+    return optimizationResults(results, sat, satFull, scen, params, trueAttitude, options)
+end
+
+function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
+     x :: Array{Float64,2})
 
     # number of design vairables
     n = size(x)[1]
@@ -332,13 +398,13 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions, x :: Array{Float
 
     # initialize clusters
     out = kmeans(x,opt.Ncl)
-    ind = Clustering.assignments(out)
+    ind = assignments(out)
 
     cl = 1:opt.Ncl
 
     # intialize best local optima in each cluster
     xopt = zeros(n,opt.Ncl)
-    fopt = zeros(1,opt.Ncl)
+    fopt = Array{Float64,1}(undef,opt.Ncl)
 
     clLeadInd = Array{Int64,1}(undef,opt.Ncl)
     # loop through the clusters
@@ -346,7 +412,7 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions, x :: Array{Float
         # find the best local optima in the cluster particles history
         clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
         xopt[:,j] = Plx[:,clLeadInd[j]]
-        fopt[:,j] = Plf[:,clLeadInd[j]]
+        fopt[j] = Plf[clLeadInd[j]]
     end
 
     # initilize global bests
@@ -367,15 +433,15 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions, x :: Array{Float
 
     # store the best solution from the current iteration
     xOptHist = zeros(n,opt.tmax)
-    fOptHist = zeros(1,opt.tmax)
+    fOptHist = Array{Float64,1}(undef,opt.tmax)
 
-    optInd = argmin(fopt)[2]
+    optInd = argmin(fopt)
     xOptHist[:,1] = xopt[:,optInd]
-    fOptHist[:,1] = fopt[:,optInd]
+    fOptHist[1] = fopt[optInd]
 
     # initalize particle and objective histories
     xHist = zeros(size(x)...,opt.tmax)
-    fHist = zeros(size(finit)[2],opt.tmax)
+    fHist = zeros(length(finit),opt.tmax)
 
     xHist[:,:,1] = x
     fHist[:,1] = finit
@@ -413,14 +479,14 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions, x :: Array{Float
         fHist[:,i] = f
 
         # update the local best for each particle
-        indl = findall(f[:] .< Plf[:])
+        indl = findall(f .< Plf)
         Plx[:,indl] = x[:,indl]
-        Plf[:,indl] = f[indl]
+        Plf[indl] = f[indl]
 
         # on the appropriate iterations, update the clusters
         if mod(i+opt.clI-2,opt.clI) == 0
             out = kmeans(x,opt.Ncl)
-            ind = Clustering.assignments(out)
+            ind = assignments(out)
             #cl = 1:opt.Ncl;
         end
 
@@ -430,7 +496,7 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions, x :: Array{Float
             clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
 
             xopt[:,j] = Plx[:,clLeadInd[j]]
-            fopt[:,j] = Plf[:,clLeadInd[j]]
+            fopt[j] = Plf[clLeadInd[j]]
         end
 
         # loop through all the particles
@@ -447,23 +513,21 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions, x :: Array{Float
         end
 
         # store the best solution from the current iteration
-        optInd = argmin(fopt)[2]
+        optInd = argmin(fopt)
         xOptHist[:,i] = xopt[:,optInd]
         fOptHist[i] = fopt[optInd]
     end
 
-    fmin = min(fOptHist...)
-    xmin = xOptHist[:,findall(fOptHist[end,:] .== fmin)[end]]
-
-    return optimResults(xHist,fHist,xOptHist,fOptHist[:],xmin[:],fmin)
+    return PSO_results(xHist,fHist,xOptHist,fOptHist,xOptHist[:,end],fOptHist[end])
 end
 
-#in progress
-function PSO_cluster(costFunc :: Function, opt :: optimOptions,
-    x :: Array{Array{Float64,1},1})
+#in progress -- opperates on vectors of custom attitude types rather than on a 2D
+# array where each collum is a particle
+function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
+    x :: Union{Array{MRP,1},Array{GRP,1}})
 
     # number of design vairables
-    n = length(x[1])
+    n = length(x)
 
     # create time vector for cooling and population reduction schedules
     t = LinRange(0,1,opt.tmax)
@@ -472,30 +536,31 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions,
     finit = costFunc(x)
 
     # initialize the local best for each particle as its inital value
-    Plx = x
+    Plx = deepcopy(x)
     Plf = finit
 
     # initialize clusters
     out = kmeans(x,opt.Ncl)
-    ind = Clustering.assignments(out)
+    ind = assignments(out)
 
     cl = 1:opt.Ncl
 
     # intialize best local optima in each cluster
-    xopt = zeros(n,opt.Ncl)
-    fopt = zeros(1,opt.Ncl)
+    xopt = Array{typeof(x[1]),1}(undef,opt.Ncl)
+    fopt = Array{Float64,1}(undef,opt.Ncl)
 
     clLeadInd = Array{Int64,1}(undef,opt.Ncl)
+
     # loop through the clusters
     for j in cl
         # find the best local optima in the cluster particles history
         clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
-        xopt[:,j] = Plx[:,clLeadInd[j]]
-        fopt[:,j] = Plf[:,clLeadInd[j]]
+        xopt[j] = Plx[clLeadInd[j]]
+        fopt[j] = Plf[clLeadInd[j]]
     end
 
     # initilize global bests
-    Pgx = zeros(size(Plx))
+    Pgx = similar(Plx)
 
     # loop through all the particles
     for j = 1:opt.N
@@ -503,30 +568,33 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions,
         # best in proportion to the user specified epsilon
         if rand(1)[1] < opt.evec[1] || any(j .== clLeadInd)
             # follow the local cluster best
-            Pgx[:,j] = xopt[:,ind[j]]
+            Pgx[j] = deepcopy(xopt[ind[j]])
         else
             # follow a random cluster best
-            Pgx[:,j] = xopt[:,cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]]
+            Pgx[j] = deepcopy(xopt[cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]])
         end
     end
 
     # store the best solution from the current iteration
-    xOptHist = zeros(n,opt.tmax)
-    fOptHist = zeros(1,opt.tmax)
+    xOptHist = Array{typeof(xopt[1]),1}(undef,opt.tmax)
+    fOptHist = Array{typeof(fopt[1]),1}(undef,opt.tmax)
 
-    optInd = argmin(fopt)[2]
-    xOptHist[:,1] = xopt[:,optInd]
-    fOptHist[:,1] = fopt[:,optInd]
+    optInd = argmin(fopt)
+    xOptHist[1] = deepcopy(xopt[optInd])
+    fOptHist[1] = fopt[optInd]
 
     # initalize particle and objective histories
-    xHist = zeros(size(x)...,opt.tmax)
-    fHist = zeros(size(finit)[2],opt.tmax)
+    xHist = Array{typeof(x),1}(undef,opt.tmax)
+    fHist = Array{typeof(finit),1}(undef,opt.tmax)
 
-    xHist[:,:,1] = x
-    fHist[:,1] = finit
+    xHist[1] = deepcopy(x)
+    fHist[1] = finit
 
-    # inital particle velocity is zero
-    v = zeros(size(x));
+    # inital v is zero
+    v = Array{Array{Float64,1},1}(undef,length(x))
+    for i = 1:length(x)
+        v[i] = [0;0;0]
+    end
 
     # main loop
     for i = 2:opt.tmax
@@ -537,35 +605,46 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions,
         # calculate epsilon using the schedule
         epsilon = opt.evec[1] - t[i]*(opt.evec[1] - opt.evec[2])
 
-        # calcualte the velocity
-        r = rand(1,2);
-        v = a*v .+ r[1].*(opt.bl).*(Plx - x) .+ r[2]*(opt.bg).*(Pgx - x)
+        r = rand(1,2)
 
-        # update the particle positions
-        x = x .+ v
+        for i = 1:length(x)
+            # calcualte the velocity
+            v[i] = a.*v[i] + r[1]*(opt.bl).*(Plx[i].p - x[i].p) + r[2]*(opt.bg).*(Pgx[i].p - x[i].p)
+            # update the particle positions
+            x[i].p += v[i]
 
-        # enforce spacial limits on particles
-        xn = sqrt.(sum(x.^2,dims=1))
-        x[:,vec(xn .> opt.Lim)] = opt.Lim .* (x./xn)[:,vec(xn.> opt.Lim)]
-
+            # enforce spacial limits on particles
+            if typeof(x[1]) == GRP
+                if norm(x[i].p) > x[i].f^2
+                    x[i].p = x[i].p./norm(x[i].p)
+                end
+            elseif typeof(x[1]) == MRP
+                if norm(x[i].p) > 1
+                    x[i].p = x[i].p./norm(x[i].p)
+                end
+            else
+                error("non-Rodrigues parameters are not supported")
+            end
+        end
         # store the current particle population
-        xHist[:,:,i] = x
+        xHist[i] = deepcopy(x)
 
         # evalue the objective function for each particle
         f = costFunc(x)
 
         # store the objective values for the current generation
-        fHist[:,i] = f
+        fHist[i] = f
 
         # update the local best for each particle
         indl = findall(f[:] .< Plf[:])
-        Plx[:,indl] = x[:,indl]
-        Plf[:,indl] = f[indl]
+        Plx[indl] = deepcopy(x[indl])
+        Plf[indl] = f[indl]
+
 
         # on the appropriate iterations, update the clusters
         if mod(i+opt.clI-2,opt.clI) == 0
             out = kmeans(x,opt.Ncl)
-            ind = Clustering.assignments(out)
+            ind = assignments(out)
             #cl = 1:opt.Ncl;
         end
 
@@ -574,8 +653,8 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions,
             # find the best local optima in the cluster particles history
             clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
 
-            xopt[:,j] = Plx[:,clLeadInd[j]]
-            fopt[:,j] = Plf[:,clLeadInd[j]]
+            xopt[j] = deepcopy(Plx[clLeadInd[j]])
+            fopt[j] = Plf[clLeadInd[j]]
         end
 
         # loop through all the particles
@@ -584,120 +663,144 @@ function PSO_cluster(costFunc :: Function, opt :: optimOptions,
             # best in proportion to the user specified epsilon
             if rand(1)[1] < epsilon || sum(j == clLeadInd) > 0
                 # follow the local cluster best
-                Pgx[:,j] = xopt[:,ind[j]];
+                Pgx[j] = deepcopy(xopt[ind[j]])
             else
                 # follow a random cluster best
-                Pgx[:,j] = xopt[:,cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]]
+                Pgx[j] = deepcopy(xopt[cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]])
             end
         end
 
         # store the best solution from the current iteration
-        optInd = argmin(fopt)[2]
-        xOptHist[:,i] = xopt[:,optInd]
+        optInd = argmin(fopt)
+        xOptHist[i] = deepcopy(xopt[optInd])
         fOptHist[i] = fopt[optInd]
+
     end
 
-    fmin = min(fOptHist...)
-    xmin = xOptHist[:,findall(fOptHist[end,:] .== fmin)[end]]
-
-    return optimResults(xHist,fHist,xOptHist,fOptHist[:],xmin[:],fmin)
+    return PSO_results(xHist,fHist,xOptHist,fOptHist,xOptHist[end],fOptHist[end])
 end
 
-function MPSO_cluster(costFunc :: Function, opt :: optimOptions,
+#in progress
+function MPSO_cluster(costFunc :: Function, opt :: PSO_parameters,
     x :: Array{Float64,2})
 end
 
-function costFuncGen(obj :: targetObject, scen :: scenario,
-    attitude :: Union{Array{Float64,2},Array{Float64,1},quaternion,MRP,GRP,DCM},
-    repType = "Arrays", a = 1.0, f = 1.0)
+function costFuncGen(obj :: targetObject, scen :: spaceScenario,
+    trueAttitude :: Union{Array{Float64,2},Array{Float64,1},quaternion,MRP,GRP,DCM},
+    options :: optimizationOptions, a = 1.0, f = 1.0)
 
-    if (typeof(attitude) == Array{Float64,1}) & (length(attitude) == 3)
-        Ftrue = Fobs_eval(attitude, obj, scen, "GRP", a , f)
-        attType = "GRP"
-    elseif (typeof(attitude) == Array{Float64,1}) & (length(attitude) == 4)
-        Ftrue = Fobs_eval(attitude, obj, scen, "quaternion")
-        attType = "quaternion"
-    elseif (typeof(attitude) == Array{Float64,2}) & (size(attitude) == (3,3))
-        Ftrue = Fobs_eval(attitude, obj, scen, "DCM")
-        attType = "DCM"
-    elseif typeof(attitude) <: Union{DCM,MRP,GRP,quaternion}
-        Ftrue = Fobs_eval(attitude, obj, scen)
-    end
+    Ftrue = Fobs_eval(trueAttitude, obj, scen, a , f)
 
-    if cmp(repType,"Arrays") == 0
-        return func = (att) -> LMC(obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,
-        obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C,att,Ftrue,
-        a=a,f=f,attType=attType)
-    elseif cmp(repType,"CustomAttitudeTypes") == 0
-        return func = (att) -> LMC(obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,
-        obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C,att,Ftrue)
-    else
-        throw(error("Please Provide Valid representation type"))
-    end
-end
-
-function LMC(un :: Array{Float64,2}, uu :: Array{Float64,2}, uv :: Array{Float64,2},
-    Area :: Array{Float64,2}, nu :: Array{Float64,2}, nv :: Array{Float64,2},
-    Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2}, usun :: Array{Float64,1},
-    uobs :: Array{Float64,2}, d :: Array{Float64,2}, C :: Float64,
-    attitudes :: Union{Array{Float64,2},Array{Float64,3}}, Ftrue :: Array{Float64,1};
-    a=1.0, f=1.0, attType = "MRP")
-
-    if (cmp(attType,"MRP") == 0) | (cmp(attType,"GRP") == 0)
-        F = zeros(size(uobs)[2],size(attitudes)[2])
-
-        for i = 1:size(attitudes)[2]
-            F[:,i] = Fobs(p2A(attitudes[:,i],a,f),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
-        end
-    elseif cmp(attType,"quaternion") == 0
-        F = zeros(size(uobs)[2],size(attitudes)[2])
-
-        for i = 1:size(attitudes)[2]
-            F[:,i] = Fobs(q2A(attitudes[:,i]),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
-        end
-    elseif cmp(attType,"DCM") == 0
-        F = zeros(size(uobs)[2],size(attitudes)[2])
-
-        for i = 1:size(attitudes)[2]
-            F[:,i] = Fobs(attitudes[:,:,i],un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+    if !options.customTypes
+        if (options.Parameterization == MRP) | (options.Parameterization == GRP)
+            attTransFunc = (x) -> p2A(x,a,f)
+        elseif options.Parameterization == quaternion
+            attTransFunc = q2A
+        else
+            error("Please provide a valid attitude representation type. Options are:
+            'MRP' (modified Rodrigues parameters), 'GRP' (generalized Rodrigues parameters),
+            or 'quaternion' ")
         end
     else
-        @infiltrate
+        attTransFunc = any2A
     end
-    return sum(((F .- Ftrue)./(Ftrue .+ 1e-50)).^2,dims=1)
+
+    return func = ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,
+    obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C,Ftrue,
+    attTransFunc,scen.obsNo)) :: Function
 end
 
-function LMC(un :: Array{Array{Float64,1},1}, uu :: Array{Array{Float64,1},1},
-    uv :: Array{Array{Float64,1},1}, Area :: Array{Float64,1},
-    nu :: Array{Float64,1}, nv :: Array{Float64,1}, Rdiff :: Array{Float64,1},
-    Rspec :: Array{Float64,1}, usun :: Array{Array{Float64,1},1},
-    uobs :: Array{Array{Float64,1},1}, d :: Array{Float64,1}, C :: Float64,
-    attitudes :: Union{Array{quaternion,1},Array{MRP,1},Array{GRP,1},Array{DCM,1}},
-    Ftrue :: Array{Float64,1})
+function LMC(attitudes :: Array{Float64,2},
+    un :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    uu :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    uv :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    Area :: Union{Array{Float64,2}, Array{Float64,1}},
+    nu :: Union{Array{Float64,2}, Array{Float64,1}},
+    nv :: Union{Array{Float64,2}, Array{Float64,1}},
+    Rdiff :: Union{Array{Float64,2}, Array{Float64,1}},
+    Rspec :: Union{Array{Float64,2}, Array{Float64,1}},
+    usun :: Array{Float64,1},
+    uobs :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    d :: Union{Array{Float64,2}, Array{Float64,1}},
+    C :: Float64,
+    Ftrue :: Array{Float64,1},
+    attTransFunc :: Function,
+    obsNo :: Int64)
 
+    cost = Array{Float64,1}(undef,size(attitudes,2))
+    for i = 1:size(attitudes)[2]
+        cost[i] = LMC(attitudes[:,i],un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,
+            Ftrue,attTransFunc,obsNo)
+    end
+    return cost
+end
 
+function LMC(attitude :: Array{Float64,1},
+    un :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    uu :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    uv :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    Area :: Union{Array{Float64,2}, Array{Float64,1}},
+    nu :: Union{Array{Float64,2}, Array{Float64,1}},
+    nv :: Union{Array{Float64,2}, Array{Float64,1}},
+    Rdiff :: Union{Array{Float64,2}, Array{Float64,1}},
+    Rspec :: Union{Array{Float64,2}, Array{Float64,1}},
+    usun :: Array{Float64,1},
+    uobs :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    d :: Union{Array{Float64,2}, Array{Float64,1}},
+    C :: Float64,
+    Ftrue :: Array{Float64,1},
+    attTransFunc :: Function,
+    obsNo :: Int64)
 
-    # if cmp(Type,"MRP") == 0 | cmp(Type,"GRP") == 0
-    #     F = zeros(length(uobs),length(attitudes))
-    #
-    #     for i = 1:length(attitudes)
-    #         F[:,i] = Fobs(p2A(attitudes[i]),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
-    #     end
-    # elseif cmp(Type,"quaternion") == 0
-    #     F = zeros(length(uobs),length(attitudes))
-    #
-    #     for i = 1:length(attitudes)
-    #         F[:,i] = Fobs(q2A(attitudes[i]),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
-    #     end
-    # elseif cmp(Type,"DCM") == 0
-    #     F = zeros(length(uobs),length(attitudes))
-    #
-    #     for i = 1:size(attitudes)[2]
-    #         F[:,i] = Fobs(attitudes[i],un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
-    #     end
-    # end
-    F = broadcast((x)->Fobs(x,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C),any2A(attitudes))
-    return sum(((F - Ftrue)./(Ftrue .+ 1e-50)).^2,dims=1)
+    return sum(((Fobs(attTransFunc(attitude),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C) -
+        Ftrue)./(Ftrue .+ 1e-50)).^2)
+end
+
+function LMC(attitudes :: Union{Array{quaternion,1},Array{MRP,1},Array{GRP,1},Array{DCM,1}},
+    un :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    uu :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    uv :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    Area :: Union{Array{Float64,2}, Array{Float64,1}},
+    nu :: Union{Array{Float64,2}, Array{Float64,1}},
+    nv :: Union{Array{Float64,2}, Array{Float64,1}},
+    Rdiff :: Union{Array{Float64,2}, Array{Float64,1}},
+    Rspec :: Union{Array{Float64,2}, Array{Float64,1}},
+    usun :: Array{Float64,1},
+    uobs :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    d :: Union{Array{Float64,2}, Array{Float64,1}},
+    C :: Float64,
+    Ftrue :: Array{Float64,1},
+    attTransFunc :: Function,
+    obsNo :: Int64)
+
+    cost = Array{Float64,1}(undef,length(attitudes))
+    for i = 1:length(attitudes)
+        cost[i] = LMC(attitudes[i],un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,
+            Ftrue,attTransFunc,obsNo)
+    end
+
+    return cost
+end
+
+function LMC(attitude :: Union{quaternion,MRP,GRP,DCM},
+    un :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    uu :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    uv :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    Area :: Union{Array{Float64,2}, Array{Float64,1}},
+    nu :: Union{Array{Float64,2}, Array{Float64,1}},
+    nv :: Union{Array{Float64,2}, Array{Float64,1}},
+    Rdiff :: Union{Array{Float64,2}, Array{Float64,1}},
+    Rspec :: Union{Array{Float64,2}, Array{Float64,1}},
+    usun :: Array{Float64,1},
+    uobs :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
+    d :: Union{Array{Float64,2}, Array{Float64,1}},
+    C :: Float64,
+    Ftrue :: Array{Float64,1},
+    attTransFunc :: Function,
+    obsNo :: Int64)
+
+    return sum(((Fobs(attTransFunc(attitude).A,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C) -
+        Ftrue)./(Ftrue .+ 1e-50)).^2)
 end
 
 # function LMC_Q(un :: Array{Float64,2}, uu :: Array{Float64,2}, uv :: Array{Float64,2},
@@ -758,8 +861,6 @@ function Fobs(A :: Array{Float64,2}, un :: Array{Float64,2}, uu :: Array{Float64
     usunI :: Array{Float64,1}, uobsI :: Array{Float64,2}, d :: Array{Float64,2},
     C :: Float64)
 
-
-
     usun = A*usunI
     uobs = A*uobsI
 
@@ -809,55 +910,120 @@ function Fobs(A :: Array{Float64,2}, un :: Array{Float64,2}, uu :: Array{Float64
     return Ftotal[:]
 end
 
-function Fobs(A :: DCM, unm :: Array{Array{Float64,1},1},
+# function Fobs(A :: DCM, un :: Array{Float64,2}, uu :: Array{Float64,2},
+#     uv :: Array{Float64,2}, Area :: Array{Float64,2}, nu :: Array{Float64,2},
+#     nv :: Array{Float64,2}, Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2},
+#     usunI :: Array{Float64,1}, uobsI :: Array{Float64,2}, d :: Array{Float64,2},
+#     C :: Float64)
+#
+#
+#
+#     usun = A.A*usunI
+#     uobs = A.A*uobsI
+#
+#     check1 = usun'*un .<= 0
+#     check2 = uobs'*un .<= 0
+#     visFlag = check1 .| check2
+#
+#     # calculate the half angle vector
+#     uh = transpose((usun .+ uobs)./sqrt.(2 .+ 2*usun'*uobs))
+#     # precalculate some dot products to save time
+#     usdun = usun'*un
+#     uodun = uobs'*un
+#
+#     # diffuse reflection
+#     pdiff = ((28*Rdiff)./(23*pi)).*(1 .- Rspec).*(1 .- (1 .- usdun./2).^5).*
+#     (1 .- (1 .- uodun./2).^5)
+#
+#     # spectral reflection
+#
+#     # calculate numerator and account for the case where the half angle
+#     # vector lines up with the normal vector
+#     temp = (uh*un)
+#     temp[visFlag] .= 0
+#
+#     pspecnum = sqrt.((nu .+ 1).*(nv .+ 1)).*(Rspec .+ (1 .- Rspec).*(1 .- uh*usun).^5)./(8*pi).*
+#     (temp.^((nu.*(uh*uu).^2 .+ nv.*(uh*uv).^2)./(1 .- temp.^2)))
+#
+#     if any(isnan.(pspecnum))
+#         pspecnum[isnan.(pspecnum)] = sqrt.((nu .+ 1).*(nv .+ 1)).*
+#         (Rspec .+ (1 .- Rspec).*(1 .- uh*usun).^5)./(8*pi)[isnan.(pspecnum)]
+#     end
+#
+#
+#     # fraction of visibile light for all observer/facet combinations
+#     F = C./(d'.^2).*(pspecnum./(usdun .+ uodun .- (usdun).*(uodun)) .+ pdiff).*(usdun).*Area.*(uodun)
+#     F[visFlag] .= 0
+#
+#     # Ftotal = Array{Float64,1}(undef,size(F)[1])
+#     Ftotal = zeros(size(F)[1],1)
+#     for i = 1:size(F,1)
+#         for j = 1:size(F,2)
+#             Ftotal[i] += F[i,j]
+#         end
+#     end
+#     # Ftotal = sum(F,dims=2)
+#
+#     return Ftotal[:]
+# end
+
+function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
     uum :: Array{Array{Float64,1},1}, uvm :: Array{Array{Float64,1},1},
     Area :: Array{Float64,1}, nu :: Array{Float64,1}, nv :: Array{Float64,1},
     Rdiff :: Array{Float64,1}, Rspec :: Array{Float64,1},
     usunI :: Array{Float64,1}, uobsI :: Array{Array{Float64,1},1},
     d :: Array{Float64,1}, C :: Float64)
 
-    Ftotal = Array{Float64,1}(undef,size(uobsI,2))
+    Ftotal = Array{Float64,1}(undef,length(uobsI))
 
-    usun = A.A*usunI
+    usun = A*usunI
+    uobst = Array{Array{Float64,1},1}(undef,length(uobsI))
+    for i = 1:length(uobsI)
+        uobst[i] = A * uobsI[i]
+    end
 
-    for i = 1:length(un)
+    for i = 1:length(unm)
         un = unm[i]
         uv = uvm[i]
         uu = uum[i]
 
-        for j = 1:length(uobs)
-            uobs = A*uobsI[i]
+        for j = 1:length(uobsI)
+            uobs = uobst[j]
 
             check1 = usun'*un <= 0
             check2 = uobs'*un <= 0
             visFlag = check1 | check2
 
-            # calculate the half angle vector
-            uh = transpose((usun + uobs)./sqrt(2 + 2*usun'*uobs))
-            # precalculate some dot products to save time
-            usdun = usun'*un
-            uodun = uobs'*un
-
-            # diffuse reflection
-            pdiff = ((28*Rdiff)/(23*pi))*(1 - Rspec)*(1 - (1 - usdun/2)^5)*
-            (1 - (1 - uodun/2)^5)
-
-            # spectral reflection
-
-            # calculate numerator and account for the case where the half angle
-            # vector lines up with the normal vector
-
             if visFlag
                 F = 0
             else
+                # calculate the half angle vector
+                uh = ((usun + uobs)./sqrt(2 + 2*dot(usun,uobs)))'
+
+                # precalculate some dot products to save time
+                usdun = usun'*un
+                uodun = uobs'*un
+
+                # diffuse reflection
+                pdiff = ((28*Rdiff[i])/(23*pi))*(1 - Rspec[i])*(1 - (1 - usdun/2)^5)*
+                (1 - (1 - uodun/2)^5)
+
+                # spectral reflection
+
+                # calculate numerator and account for the case where the half angle
+                # vector lines up with the normal vector
+
                 if (1-uh*un)==0
                     pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1))*
-                    (Rspec[i] .+ (1 .- Rspec[i]).*(1 .- uh*usun).^5)./(8*pi)
+                    (Rspec[i] + (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)
                 else
-                    pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1)).*(Rspec[i] + (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)*
+                    pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1))*(Rspec[i] +
+                    (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)*
                     ((uh*un)^((nu[i]*(uh*uu)^2 + nv[i]*(uh*uv)^2)/(1 - (uh*un)^2)))
                 end
-                Ftotal[j] += C[j]/(d[j]^2)*(pspecnum/(usdun + uodun - (usdun)*(uodun)) + pdiff)*(usdun)*Area[i]*(uodun)
+
+                Ftotal[j] += C/(d[j]^2)*(pspecnum/(usdun + uodun - (usdun)*(uodun)) +
+                pdiff)*(usdun)*Area[i]*(uodun)
             end
 
         end
@@ -868,23 +1034,99 @@ function Fobs(A :: DCM, unm :: Array{Array{Float64,1},1},
     return Ftotal
 end
 
-function Fobs_eval(A :: Union{DCM,MRP,GRP,quaternion}, obj :: targetObject, scen :: scenario)
+# function Fobs(A :: DCM, unm :: Array{Array{Float64,1},1},
+#     uum :: Array{Array{Float64,1},1}, uvm :: Array{Array{Float64,1},1},
+#     Area :: Array{Float64,1}, nu :: Array{Float64,1}, nv :: Array{Float64,1},
+#     Rdiff :: Array{Float64,1}, Rspec :: Array{Float64,1},
+#     usunI :: Array{Float64,1}, uobsI :: Array{Array{Float64,1},1},
+#     d :: Array{Float64,1}, C :: Float64)
+#
+#     Ftotal = Array{Float64,1}(undef,length(uobsI))
+#
+#     usun = A.A*usunI
+#     uobst = Array{Array{Float64,1},1}(undef,length(uobsI))
+#     for i = 1:length(uobsI)
+#         uobst[i] = A.A * uobsI[i]
+#     end
+#
+#     for i = 1:length(unm)
+#         un = unm[i]
+#         uv = uvm[i]
+#         uu = uum[i]
+#
+#         for j = 1:length(uobsI)
+#             uobs = uobst[j]
+#
+#             check1 = usun'*un <= 0
+#             check2 = uobs'*un <= 0
+#             visFlag = check1 | check2
+#
+#             if visFlag
+#                 F = 0
+#             else
+#                 # calculate the half angle vector
+#                 uh = ((usun + uobs)./sqrt(2 + 2*usun'*uobs))'
+#
+#                 # precalculate some dot products to save time
+#                 usdun = usun'*un
+#                 uodun = uobs'*un
+#
+#                 # diffuse reflection
+#                 pdiff = ((28*Rdiff[i])/(23*pi))*(1 - Rspec[i])*(1 - (1 - usdun/2)^5)*
+#                 (1 - (1 - uodun/2)^5)
+#
+#                 # spectral reflection
+#
+#                 # calculate numerator and account for the case where the half angle
+#                 # vector lines up with the normal vector
+#
+#                 if (1-uh*un)==0
+#                     pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1))*
+#                     (Rspec[i] + (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)
+#                 else
+#                     pspecnum = sqrt((nu[i] + 1)*(nv[i] + 1))*(Rspec[i] +
+#                     (1 - Rspec[i])*(1 - uh*usun)^5)/(8*pi)*
+#                     ((uh*un)^((nu[i]*(uh*uu)^2 + nv[i]*(uh*uv)^2)/(1 - (uh*un)^2)))
+#                 end
+#
+#                 Ftotal[j] += C/(d[j]^2)*(pspecnum/(usdun + uodun - (usdun)*(uodun)) +
+#                 pdiff)*(usdun)*Area[i]*(uodun)
+#             end
+#
+#         end
+#     end
+#
+#     # sum(F,dims=2)
+#
+#     return Ftotal
+# end
 
-    return Fobs(any2A(A).A,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
-    obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
+function Fobs_eval(A :: Union{Array{Float64,2},Array{Float64,1},DCM,MRP,GRP,quaternion},
+    obj :: targetObject, scen :: spaceScenario, a=1, f=1)
+
+    if (typeof(A) == Array{Float64,1}) & (length(A) == 3)
+        return Fobs(any2A(A,"MRP",a,f),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
+        obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
+    elseif (typeof(A) == Array{Float64,1}) & (length(A) == 4)
+        return Fobs(any2A(A,"quaternion"),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
+        obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
+    elseif (typeof(A) == Array{Float64,2}) & (size(A) == (3,3))
+        return Fobs(any2A(A,"DCM"),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
+        obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
+    elseif typeof(A) <: Union{DCM,MRP,GRP,quaternion}
+        return Fobs(any2A(A).A,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
+        obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
+    else
+        error("Please provide a valid attitude. Attitudes must be represented
+        as a single 3x1 or 4x1 float array, a 3x3 float array, or any of the
+        custom attitude types defined in the attitueFunctions package.")
+    end
 end
 
-function Fobs_eval(A :: Union{Array{Float64,2},Array{Float64,1}},
-     obj :: targetObject, scen :: scenario, Type = "MRP", a = 1.0, f = 1.0)
-
-    return Fobs(any2A(A,Type,a,f),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
-    obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
+function analyzeResults(results :: PSO_results)
 end
 
-function analyzeResults(results :: optimResults)
-end
-
-function plotSat(obj :: targetObjectFull, scen :: scenario, A :: Array{Float64,2})
+function plotSat(obj :: targetObjectFull, scen :: spaceScenario, A :: Array{Float64,2})
 
     objM = mxarray(obj)
     scenM = mxarray(scen)
@@ -903,6 +1145,15 @@ function plotOptResults(results, qtrue = 0, a=1, f=1)
         display(plot(tvec,errAng))
     end
     return errors
+end
+
+function kmeans(x :: Union{Array{MRP,1},Array{GRP,1}}, ncl)
+
+    temp = Array{Float64,2}(undef,3,length(x))
+    for i = 1:length(x)
+        temp[:,i] = x[i].p
+    end
+    return kmeans(temp,ncl)
 end
 
 end
