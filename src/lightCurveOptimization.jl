@@ -10,9 +10,11 @@ using MATLAB
 using attitudeFunctions
 using Plots
 
+import Distances: evaluate
+
 import Clustering: kmeans, kmedoids, assignments
 
-export costFuncGen, PSO_cluster, simpleScenarioGenerator, Fobs_eval,
+export costFuncGen, PSO_cluster, MPSO_cluster, simpleScenarioGenerator, Fobs_eval,
     optimizationOptions, optimizationResults, targetObject, kmeans,
     targetObjectFull, spaceScenario, attitudePSO_Main, PSO_parameters, PSO_results,
     Convert_PSO_results
@@ -57,7 +59,7 @@ struct spaceScenario
     obsVecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
 end
 
-function simpleSatellite(;vectorized = false)
+function simpleSatellite(;vectorized = true)
 
 
     ## satellite bus
@@ -246,7 +248,7 @@ function simpleSatellite(;vectorized = false)
     return simpleStruct, fullStruct
 end
 
-function simpleScenario(;vectorized = false)
+function simpleScenario(;vectorized = true)
 
     # C -- sun power per square meter
     C = 455.0 #W/m^2
@@ -281,7 +283,7 @@ function simpleScenario(;vectorized = false)
     return spaceScenario(obsNo,C,obsDist,sunVec,obsVecs)
 end
 
-function simpleScenarioGenerator(;vectorized = false)
+function simpleScenarioGenerator(;vectorized = true)
     (sat, satFull) = simpleSatellite(vectorized = vectorized )
     scenario = simpleScenario(vectorized  = vectorized)
     return sat, satFull, scenario
@@ -321,8 +323,7 @@ struct PSO_results
     fOpt :: Float64
 end
 
-function Convert_PSO_results(results, attType, a = 1,f = 1)
-
+function Convert_PSO_results(results :: PSO_results, attType, a = 1,f = 1)
     xHist = Array{Array{attType,1},1}(undef, length(results.xHist))
     for i = 1:length(results.xHist)
         for j = 1:size(results.xHist[1],2)
@@ -360,19 +361,24 @@ function Convert_PSO_results(results, attType, a = 1,f = 1)
     return PSO_results(xHist,results.fHist,xOptHist,results.fOptHist,xOpt,results.fOpt)
 end
 
-@with_kw struct optimizationOptions
+struct optimizationOptions
     # set whether the optimizer represents attitudes as 1D arrays of custom types
     # or as 2D arrays where columns correspond to attitudes
-    customTypes = true
+    vectorizeOptimization
+    # determines whether cost function is vectorized or evaluated in loops
+    vectorizeCost
     # set the attitude parameterization that defines the search space of the
     #optimization
-    Parameterization = MRP
-    # determines whether cost function is vectorized or evaluated in loops
-    vectorized = false
+    Parameterization
     # choose whether the multiplicative PSO is used
-    useMultiplicative = false
+    useMPSO
     # choose method for particle initialization
-    initMethod = "random"
+    initMethod
+end
+
+function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = false,
+    Parameterization = quaternion,useMPSO = false, initMethod = "random")
+    optimizationOptions(vectorizeOptimization,vectorizeCost,Parameterization,useMPSO,initMethod)
 end
 
 struct optimizationResults
@@ -392,33 +398,45 @@ function attitudePSO_Main(trueAttitude, params :: PSO_parameters,
         initialParticleDistribution = 0)
 
     if cmp(object,"simple satellite") == 0
-        (sat, satFull) = simpleSatellite(vectorized = options.vectorized)
+        (sat, satFull) = simpleSatellite(vectorized = options.vectorizeCost)
     else
         error("Please Provide valid object specifiction. Options are:
         'simple satellite'")
     end
 
     if cmp(scenario,"simple scenario") == 0
-        scen = simpleScenario(vectorized = options.vectorized)
+        scen = simpleScenario(vectorized = options.vectorizeCost)
     else
         error("Please Provide valid object specifiction. Options are:
         'simple scenario'")
     end
 
-    costFunc = costFuncGen(sat,scen,trueAttitude,options,a,f)
+    if typeof(trueAttitude) == Array{Float64,2}
+        A = trueAttitude
+    elseif typeof(trueAttitude) == Union{MRP,GRP,quaternion,DCM}
+        A = any2A(trueAttitude)
+    elseif (typeof(trueAttitude) == Array{Float64,1}) & (length(trueAttitude) == 4)
+        A = q2A(trueAttitude)
+    elseif (typeof(trueAttitude) == Array{Float64,1}) & (length(trueAttitude) == 3)
+        A = p2A(trueAttitude,a,f)
+    else
+        error("please provide a valid true attitude")
+    end
+
+    costFunc = costFuncGen(sat,scen,A,options,a,f)
 
     if cmp(options.initMethod,"random") == 0
-        xinit = randomAtt(params.N,options.parameterization,options.customTypes)
+        xinit = randomAtt(params.N,options.Parameterization,options.vectorizeOptimization)
     elseif cmp(options.initMethod,"specified") == 0
         xinit = initialParticleDistribution
     else
         error("Please provide valid particle initialization method")
     end
 
-    if options.useMultiplicative
-        results = MPSO_cluster(costFunc,params,xinit)
+    if options.useMPSO
+        results = MPSO_cluster(xinit,costFunc,params)
     else
-        results = PSO_cluster(costFunc,params,xinit)
+        results = PSO_cluster(xinit,costFunc,params)
         if options.customTypes
             results = Convert_PSO_results(results,options.Parameterization,a,f)
         end
@@ -427,26 +445,35 @@ function attitudePSO_Main(trueAttitude, params :: PSO_parameters,
     return optimizationResults(results, sat, satFull, scen, params, trueAttitude, options)
 end
 
-function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
-    x :: Union{Array{MRP,1},Array{GRP,1}})
-    temp = Array{Array{Float64,1},1}(undef,length(x))
-    for i = 1:length(x)
-        temp[i] = x[i].p
+function PSO_cluster(x :: Union{Array{Float64,2},Array{Array{Float64,1},1},Array{MRP,1},Array{GRP,1}},
+    costFunc :: Function,
+    opt :: PSO_parameters)
+
+    if typeof(x)== Union{Array{MRP,1},Array{GRP,1}}
+        xtemp = Array{Array{Float64,1},1}(undef,length(x))
+        for i = 1:length(x)
+            xtemp[i] = x[i].p
+        end
+    else
+        xtemp = x
     end
-    xHist,fHist,xOptHist,fOptHist,xOpt,fOpt = PSO_cluster(costFunc,opt,temp)
+
+    xHist,fHist,xOptHist,fOptHist,xOpt,fOpt = _PSO_cluster(xtemp,costFunc,opt)
 
     if typeof(xHist) == Array{Array{Array{Float64,1},1},1}
-        temp = Array{Array{Float64,2},1}(undef,length(xHist))
+        xHistOut = Array{Array{Float64,2},1}(undef,length(xHist))
         for i = 1:length(xHist)
-            temp[i] = hcat(xHist[i]...)
+            xHistOut[i] = hcat(xHist[i]...)
         end
+    else
+        xHistOut = xHist
     end
 
-    return PSO_results(temp,fHist,xOptHist,fOptHist,xOpt,fOpt)
+    return PSO_results(xHistOut,fHist,xOptHist,fOptHist,xOpt,fOpt)
 end
 
-function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
-     x :: Array{Float64,2})
+function _PSO_cluster(x :: Array{Float64,2}, costFunc :: Function,
+     opt :: PSO_parameters)
 
     # number of design vairables
     n = size(x)[1]
@@ -589,17 +616,16 @@ function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
                 (abs(mean(fOptHist[i-4:i]) - mean(fOptHist[i-9:i-5])) < opt.tol) &
                 (fOptHist[i] < opt.abstol)
 
-                return PSO_results(xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],xOptHist[i],fOptHist[i])
+                return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],xOptHist[i],fOptHist[i]
             end
         end
 
     end
 
-    return PSO_results(xHist,fHist,xOptHist,fOptHist,xOptHist[end],fOptHist[end])
+    return xHist,fHist,xOptHist,fOptHist,xOptHist[end],fOptHist[end]
 end
 
-function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
-    x :: Array{Array{Float64,1},1})
+function _PSO_cluster(x, costFunc :: Function, opt :: PSO_parameters)
     # number of design vairables
     n = length(x)
 
@@ -618,8 +644,7 @@ function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
     ind = Array{Int64,1}(undef,n)
     iter = 0
     while check
-        out = kmeans(x,opt.Ncl)
-        ind = assignments(out)
+        ind = assignments(kmeans(x,opt.Ncl))
         if length(unique(ind)) == opt.Ncl
             check = false
         end
@@ -639,7 +664,7 @@ function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
     clLeadInd = Array{Int64,1}(undef,opt.Ncl)
 
     # loop through the clusters
-    for j in unique(ind)
+    for j in cl
         # find the best local optima in the cluster particles history
         clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
         xopt[j] = deepcopy(Plx[clLeadInd[j]])
@@ -695,19 +720,19 @@ function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
 
         r = rand(1,2)
 
-        for i = 1:length(x)
+        for k = 1:length(x)
             for j = 1:3
                 # calcualte the velocity
-                v[i][j] = a*v[i][j] + r[1]*(opt.bl)*(Plx[i][j] - x[i][j]) +
-                 r[2]*(opt.bg)*(Pgx[i][j] - x[i][j])
+                v[k][j] = a*v[k][j] + r[1]*(opt.bl)*(Plx[k][j] - x[k][j]) +
+                 r[2]*(opt.bg)*(Pgx[k][j] - x[k][j])
                 # update the particle positions
-                x[i][j] += v[i][j]
+                x[k][j] += v[k][j]
             end
 
 
             # enforce spacial limits on particles
-            if norm(x[i]) > opt.Lim
-                x[i] = opt.Lim.*(x[i]./norm(x[i]))
+            if norm(x[k]) > opt.Lim
+                x[k] = opt.Lim.*(x[k]./norm(x[k]))
             end
 
         end
@@ -729,8 +754,218 @@ function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
 
         # on the appropriate iterations, update the clusters
         if mod(i+opt.clI-2,opt.clI) == 0
-            out = kmeans(x,opt.Ncl)
-            ind = assignments(out)
+            ind = assignments(kmeans(x,opt.Ncl))
+        end
+
+        # loop through the clusters
+        for j in cl
+            # find the best local optima in the cluster particles history
+            clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
+
+            xopt[j] = deepcopy(Plx[clLeadInd[j]])
+            fopt[j] = Plf[clLeadInd[j]]
+        end
+
+        # loop through all the particles
+        for k = 1:opt.N
+            # randomly choose to follow the local cluster best or another cluster
+            # best in proportion to the user specified epsilon
+            if rand(1)[1] < epsilon || sum(k == clLeadInd) > 0
+                # follow the local cluster best
+                Pgx[k] = deepcopy(xopt[ind[k]])
+            else
+                # follow a random cluster best
+                Pgx[k] = deepcopy(xopt[cl[cl.!=ind[k]][rand([1,opt.Ncl-1])]])
+            end
+        end
+
+        # store the best solution from the current iteration
+        optInd = argmin(fopt)
+        xOptHist[i] = deepcopy(xopt[optInd])
+        fOptHist[i] = fopt[optInd]
+
+
+        if i>10
+            if (abs(mean(fOptHist[i-9:i] - fOptHist[i-10:i-1])) < opt.tol) &
+                (fOptHist[i] < opt.abstol)
+
+                return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],xOptHist[i],fOptHist[i]
+            end
+        end
+
+    end
+
+    return xHist,fHist,xOptHist,fOptHist,xOptHist[end],fOptHist[end]
+end
+
+#in progress
+function MPSO_cluster(x :: Union{Array{quaternion,1}, Array{Array{Float64,1},1}},
+    costFunc :: Function,
+    opt :: PSO_parameters)
+
+    if typeof(x) == Array{quaternion,1}
+        temp = Array{Array{Float64,1},1}(undef,length(x))
+        for i = 1:length(x)
+            q = zeros(4,)
+            q[1:3] = x[i].v
+            q[4] = x[i].s
+            temp[i] = q
+        end
+    else
+        temp = x
+    end
+
+    xHist,fHist,xOptHist,fOptHist,xOpt,fOpt = _MPSO_cluster(temp,costFunc,opt)
+
+    if typeof(xHist) == Array{Array{Array{Float64,1},1},1}
+        xHistOut = Array{Array{Float64,2},1}(undef,length(xHist))
+        for i = 1:length(xHist)
+            xHistOut[i] = hcat(xHist[i]...)
+        end
+    else
+        xHistOut = xHist
+    end
+
+    return PSO_results(xHistOut,fHist,xOptHist,fOptHist,xOpt,fOpt)
+end
+
+function _MPSO_cluster(x :: Array{Array{Float64,1},1}, costFunc :: Function,
+    opt :: PSO_parameters)
+
+    # create time vector for cooling and population reduction schedules
+    t = LinRange(0,1,opt.tmax)
+
+    # get the objective function values of the inital population
+    finit = costFunc(x)
+
+    # initialize the local best for each particle as its inital value
+    Plx = deepcopy(x)
+    Plf = finit
+
+    # initialize clusters
+    check = true
+    ind = Array{Int64,1}(undef,opt.N)
+    iter = 0
+    # dmat = quaternionDistance(x)
+    while check
+
+        # ind = assignments(kmedoids(quaternionDistance(x),opt.Ncl))
+        ind = assignments(kmeans(x,opt.Ncl))
+        if length(unique(ind)) == opt.Ncl
+            check = false
+        end
+        if iter > 1000
+            error("kmedoids unable to sort initial particle distribution into
+            desired number of clusters. Maximum iterations (1000) exceeded")
+        end
+        iter += 1
+    end
+
+
+    cl = 1:opt.Ncl
+
+    # intialize best local optima in each cluster
+    xopt = Array{typeof(x[1]),1}(undef,opt.Ncl)
+    fopt = Array{Float64,1}(undef,opt.Ncl)
+
+    clLeadInd = Array{Int64,1}(undef,opt.Ncl)
+
+    # loop through the clusters
+    for j in unique(ind)
+        # find the best local optima in the cluster particles history
+        clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
+        xopt[j] = deepcopy(Plx[clLeadInd[j]])
+        fopt[j] = Plf[clLeadInd[j]]
+    end
+
+    # initilize global bests
+    Pgx = similar(Plx)
+
+    # loop through all the particles
+    for j = 1:opt.N
+        # randomly choose to follow the local cluster best or another cluster
+        # best in proportion to the user specified epsilon
+        if rand(1)[1] < opt.evec[1] || any(j .== clLeadInd)
+            # follow the local cluster best
+            Pgx[j] = deepcopy(xopt[ind[j]])
+        else
+            # follow a random cluster best
+            Pgx[j] = deepcopy(xopt[cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]])
+        end
+    end
+
+    # store the best solution from the current iteration
+    xOptHist = Array{typeof(xopt[1]),1}(undef,opt.tmax)
+    fOptHist = Array{typeof(fopt[1]),1}(undef,opt.tmax)
+
+    optInd = argmin(fopt)
+
+    xOptHist[1] = deepcopy(xopt[optInd])
+    fOptHist[1] = fopt[optInd]
+
+    # initalize particle and objective histories
+    xHist = Array{typeof(x),1}(undef,opt.tmax)
+    fHist = Array{typeof(finit),1}(undef,opt.tmax)
+
+    xHist[1] = deepcopy(x)
+    fHist[1] = finit
+
+    # inital v is zero
+    w = Array{Array{Float64,1},1}(undef,length(x))
+    for i = 1:length(x)
+        w[i] = [0;0;0]
+    end
+
+    # main loop
+    for i = 2:opt.tmax
+
+        # calculate alpha using the cooling schedule
+        a = opt.av[1]-t[i]*(opt.av[1]-opt.av[2])
+
+        # calculate epsilon using the schedule
+        epsilon = opt.evec[1] - t[i]*(opt.evec[1] - opt.evec[2])
+
+        r = rand(1,2)
+
+        for j = 1:length(x)
+
+            # calcualte the velocity
+            wl = qdq2w(x[j],Plx[j] - x[j])
+            wg = qdq2w(x[j],Pgx[j] - x[j])
+            for k = 1:3
+                w[j][k] = a*w[j][k] + r[1]*(opt.bl)*wl[k] + r[2]*(opt.bg)*wg[k]
+            end
+
+            # w[j] = a*w[j] + r[1]*(opt.bl)*qdq2w(x[j],Plx[j] - x[j]) +
+            #  r[2]*(opt.bg)*qdq2w(x[j],Pgx[j] - x[j])
+            # update the particle positions
+            if norm(w[j]) > 0
+                x[j] = qPropDisc(w[j],x[j])
+            else
+                x[j] = x[j]
+            end
+        end
+
+        # store the current particle population
+        xHist[i] = deepcopy(x)
+
+        # evalue the objective function for each particle
+        f = costFunc(x)
+
+        # store the objective values for the current generation
+        fHist[i] = f
+
+        # update the local best for each particle
+        indl = findall(f .< Plf)
+        Plx[indl] = deepcopy(x[indl])
+        Plf[indl] = f[indl]
+
+
+        # on the appropriate iterations, update the clusters
+        if mod(i+opt.clI-2,opt.clI) == 0
+            # dmat = quaternionDistance(x)
+            # ind = assignments(kmedoids(quaternionDistance(x),opt.Ncl))
+            ind = assignments(kmeans(x,opt.Ncl))
         end
 
         # loop through the clusters
@@ -775,37 +1010,20 @@ function PSO_cluster(costFunc :: Function, opt :: PSO_parameters,
     return xHist,fHist,xOptHist,fOptHist,xOptHist[end],fOptHist[end]
 end
 
-#in progress
-function MPSO_cluster(costFunc :: Function, opt :: PSO_parameters,
-    x :: Array{quaternion,1})
-
-end
-
-function MPSO_cluster(costFunc :: Function, opt :: PSO_parameters,
-    x :: Array{Array{Float64,1},1})
-
-
-
-end
-
 function costFuncGen(obj :: targetObject, scen :: spaceScenario,
     trueAttitude :: Union{Array{Float64,2},Array{Float64,1},quaternion,MRP,GRP,DCM},
     options :: optimizationOptions, a = 1.0, f = 1.0)
 
     Ftrue = Fobs(trueAttitude, obj, scen, a , f)
 
-    if !options.customTypes
-        if (options.Parameterization == MRP) | (options.Parameterization == GRP)
-            attTransFunc = (x) -> p2A(x,a,f)
-        elseif options.Parameterization == quaternion
-            attTransFunc = q2A
-        else
-            error("Please provide a valid attitude representation type. Options are:
-            'MRP' (modified Rodrigues parameters), 'GRP' (generalized Rodrigues parameters),
-            or 'quaternion' ")
-        end
+    if (options.Parameterization == MRP) | (options.Parameterization == GRP)
+        attTransFunc = (x) -> p2A(x,a,f)
+    elseif options.Parameterization == quaternion
+        attTransFunc = q2A
     else
-        attTransFunc = any2A
+        error("Please provide a valid attitude representation type. Options are:
+        'MRP' (modified Rodrigues parameters), 'GRP' (generalized Rodrigues parameters),
+        or 'quaternion' ")
     end
 
     return func = ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,
@@ -1094,13 +1312,13 @@ function Fobs(A :: Union{Array{Float64,2},Array{Float64,1},DCM,MRP,GRP,quaternio
     obj :: targetObject, scen :: spaceScenario, a=1, f=1)
 
     if (typeof(A) == Array{Float64,1}) & (length(A) == 3)
-        return Fobs(any2A(A,"MRP",a,f),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
+        return Fobs(any2A(A,MRP,a,f),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
         obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
     elseif (typeof(A) == Array{Float64,1}) & (length(A) == 4)
-        return Fobs(any2A(A,"quaternion"),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
+        return Fobs(any2A(A,quaternion),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
         obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
     elseif (typeof(A) == Array{Float64,2}) & (size(A) == (3,3))
-        return Fobs(any2A(A,"DCM"),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
+        return Fobs(any2A(A,DCM),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
         obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
     elseif typeof(A) <: Union{DCM,MRP,GRP,quaternion}
         return Fobs(any2A(A).A,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
@@ -1147,11 +1365,23 @@ end
 
 function kmeans(x :: Array{Array{Float64,1},1}, ncl)
 
-    temp = Array{Float64,2}(undef,3,length(x))
+    temp = Array{Float64,2}(undef,length(x[1]),length(x))
     for i = 1:length(x)
         temp[:,i] = x[i]
     end
     return kmeans(temp,ncl)
 end
+
+function quaternionDistance(q :: Array{Array{Float64,1},1})
+    dist = Array{Float64,2}(undef,length(q),length(q))
+    for i = 1:length(q)
+        for j = i:length(q)
+            dist[i,j] = 1 - abs(q[i]'*q[j])
+            dist[j,i] = dist[i,j]
+        end
+    end
+    return dist
+end
+
 
 end
