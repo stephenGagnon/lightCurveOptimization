@@ -10,6 +10,8 @@ using MATLAB
 using attitudeFunctions
 using Plots
 using Munkres
+using NLopt
+using visibilityGroups
 
 import Distances: evaluate
 
@@ -17,47 +19,54 @@ import Clustering: kmeans, kmedoids, assignments
 
 export costFuncGen, PSO_cluster, MPSO_cluster, simpleScenarioGenerator, Fobs,
     optimizationOptions, optimizationResults, targetObject, targetObjectFull,
-    spaceScenario, PSO_parameters, PSO_results, Convert_PSO_results, plotSat,
-    simpleSatellite, simpleScenario, checkConvergence, LMC
+    spaceScenario, PSO_parameters, GB_parameters, PSO_results, Convert_PSO_results,
+    plotSat, simpleSatellite, simpleScenario, checkConvergence, LMC, toBodyFrame,
+    visPenaltyFunc, visConstraint
+
+const Vec{T<:Number} = AbstractArray{T,1}
+const Mat{T<:Number} = AbstractArray{T,2}
+const ArrayOfVecs{T<:Number} = Array{V,1} where V <: Vec
+const ArrayofMats{T<:Number} = Array{M,1} where M <: Mat
+const MatOrVecs = Union{Mat,ArrayOfVecs}
+const MatOrVec = Union{Mat,Vec}
+const anyAttitude = Union{Mat,Vec,DCM,MRP,GRP,quaternion}
 
 struct targetObject
     facetNo :: Int64
-    # vertices :: Array{Float64,2}
-    # vertList
-    Areas :: Union{Array{Float64,2},Array{Float64,1}}
-    nvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
-    vvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
-    uvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
-    nu :: Union{Array{Float64,2},Array{Float64,1}}
-    nv :: Union{Array{Float64,2},Array{Float64,1}}
-    Rdiff :: Union{Array{Float64,2},Array{Float64,1}}
-    Rspec :: Union{Array{Float64,2},Array{Float64,1}}
-    J :: Array{Float64,2}
-    bodyFrame :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    Areas :: MatOrVec
+    nvecs :: MatOrVecs
+    vvecs :: MatOrVecs
+    uvecs :: MatOrVecs
+    nu :: MatOrVec
+    nv :: MatOrVec
+    Rdiff :: MatOrVec
+    Rspec :: MatOrVec
+    J :: Mat
+    bodyFrame :: MatOrVecs
 end
 
 struct targetObjectFull
     facetNo :: Int64
-    vertices :: Array{Float64,2}
+    vertices :: Mat
     vertList
-    Areas :: Union{Array{Float64,2},Array{Float64,1}}
-    nvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
-    vvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
-    uvecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
-    nu :: Union{Array{Float64,2},Array{Float64,1}}
-    nv :: Union{Array{Float64,2},Array{Float64,1}}
-    Rdiff :: Union{Array{Float64,2},Array{Float64,1}}
-    Rspec :: Union{Array{Float64,2},Array{Float64,1}}
-    J :: Array{Float64,2}
-    bodyFrame :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    Areas :: MatOrVec
+    nvecs :: MatOrVecs
+    vvecs :: MatOrVecs
+    uvecs :: MatOrVecs
+    nu :: MatOrVec
+    nv :: MatOrVec
+    Rdiff :: MatOrVec
+    Rspec :: MatOrVec
+    J :: Mat
+    bodyFrame :: MatOrVecs
 end
 
 struct spaceScenario
     obsNo :: Int64
-    C :: Float64
-    d :: Union{Array{Float64,2},Array{Float64,1}}
-    sunVec :: Array{Float64,1}
-    obsVecs :: Union{Array{Float64,2},Array{Array{Float64,1},1}}
+    C :: N where {N <: Number}
+    d :: MatOrVec
+    sunVec :: Vec
+    obsVecs :: MatOrVecs
 end
 
 function simpleSatellite(;vectorized = false)
@@ -317,14 +326,18 @@ end
     saveFullHist = false
 end
 
+@with_kw struct GB_parameters
+    a :: Nothing = nothing
+end
+
 struct PSO_results
-    xHist :: Union{Array{Array{Float64,2},1}, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1},Nothing}
-    fHist :: Union{Array{Array{Float64,1},1},Nothing}
-    xOptHist :: Union{Array{Array{Float64,1},1}, Array{MRP,1}, Array{GRP,1}, Array{quaternion,1}, Array{DCM,1}}
-    fOptHist :: Array{Float64,1}
-    clusterxOptHist :: Union{Array{Array{Float64,2},1}, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1}}
-    clusterfOptHist :: Array{Array{Float64,1},1}
-    xOpt :: Union{Array{Float64,1},MRP,GRP,quaternion,DCM}
+    xHist :: Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1},Nothing}
+    fHist :: Union{ArrayOfVecs,Nothing}
+    xOptHist :: Union{ArrayOfVecs, Array{MRP,1}, Array{GRP,1}, Array{quaternion,1}, Array{DCM,1}}
+    fOptHist :: Vec
+    clusterxOptHist :: Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1}}
+    clusterfOptHist :: Array{Vec,1}
+    xOpt :: Union{Vec,MRP,GRP,quaternion,DCM}
     fOpt :: Float64
 end
 
@@ -407,13 +420,18 @@ struct optimizationOptions
     #optimization
     Parameterization
     # choose whether the multiplicative PSO is used
-    useMPSO
+    algorithm
     # choose method for particle initialization
     initMethod
+    # determines if full particle history at each interation is saved in particle
+    # based optimization
+    saveFullHist
 end
 
 function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = false,
-    Parameterization = quaternion,useMPSO = false, initMethod = "random",saveFullHist = false)
+    Parameterization = quaternion, algorithm = "MPSO_cluster",
+    initMethod = "random", saveFullHist = false)
+
     optimizationOptions(vectorizeOptimization,vectorizeCost,Parameterization,useMPSO,initMethod)
 end
 
@@ -423,14 +441,13 @@ struct optimizationResults
     object :: targetObject
     objectFullData :: targetObjectFull
     scenario :: spaceScenario
-    PSO_params :: PSO_parameters
+    PSO_params :: Union{PSO_parameters,GB_params}
     trueAttitude
     options :: optimizationOptions
 end
 
-function PSO_cluster(x :: Union{Array{Float64,2},Array{Array{Float64,1},1},Array{MRP,1},Array{GRP,1}},
-    costFunc :: Function,
-    opt :: PSO_parameters)
+function PSO_cluster(x :: Union{Mat,ArrayOfVecs,Array{MRP,1},Array{GRP,1}},
+    costFunc :: Function, opt :: PSO_parameters)
 
     if typeof(x)== Union{Array{MRP,1},Array{GRP,1}}
         xtemp = Array{Array{Float64,1},1}(undef,length(x))
@@ -464,7 +481,7 @@ function PSO_cluster(x :: Union{Array{Float64,2},Array{Array{Float64,1},1},Array
     return PSO_results(xHistOut,fHist,xOptHist,fOptHist,clxOptHistOut,clfOptHist,xOpt,fOpt)
 end
 
-function _PSO_cluster(x :: Array{Float64,2}, costFunc :: Function,
+function _PSO_cluster(x :: Mat, costFunc :: Function,
      opt :: PSO_parameters)
 
     # number of design vairables
@@ -640,7 +657,7 @@ function _PSO_cluster(x :: Array{Float64,2}, costFunc :: Function,
     return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
 end
 
-function _PSO_cluster(x, costFunc :: Function, opt :: PSO_parameters)
+function _PSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_parameters)
     # number of design vairables
     n = length(x)
 
@@ -838,9 +855,8 @@ function _PSO_cluster(x, costFunc :: Function, opt :: PSO_parameters)
     return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
 end
 
-function MPSO_cluster(x :: Union{Array{quaternion,1}, Array{Array{Float64,1},1}},
-    costFunc :: Function,
-    opt :: PSO_parameters)
+function MPSO_cluster(x :: Union{Array{quaternion,1}, ArrayOfVecs},
+    costFunc :: Function, opt :: PSO_parameters)
 
     if typeof(x) == Array{quaternion,1}
         temp = Array{Array{Float64,1},1}(undef,length(x))
@@ -877,8 +893,7 @@ function MPSO_cluster(x :: Union{Array{quaternion,1}, Array{Array{Float64,1},1}}
     return PSO_results(xHistOut,fHist,xOptHist,fOptHist,clxOptHistOut,clfOptHist,xOpt,fOpt)
 end
 
-function _MPSO_cluster(x :: Array{Array{Float64,1},1}, costFunc :: Function,
-    opt :: PSO_parameters)
+function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_parameters)
 
     # create time vector for cooling and population reduction schedules
     t = LinRange(0,1,opt.tmax)
@@ -1086,117 +1101,100 @@ function GBO()
 end
 
 function costFuncGen(obj :: targetObject, scen :: spaceScenario,
-    trueAttitude :: Union{Array{Float64,2},Array{Float64,1},quaternion,MRP,GRP,DCM},
-    options :: optimizationOptions, a = 1.0, f = 1.0)
+    trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0)
 
     Ftrue = Fobs(trueAttitude, obj, scen, a , f)
 
     if (options.Parameterization == MRP) | (options.Parameterization == GRP)
-        attTransFunc = (x) -> p2A(x,a,f)
+        rotFunc = ((A,v) -> p2A(A,a,f)*v)
     elseif options.Parameterization == quaternion
-        attTransFunc = q2A
+        rotFunc = qRotate
     else
         error("Please provide a valid attitude representation type. Options are:
         'MRP' (modified Rodrigues parameters), 'GRP' (generalized Rodrigues parameters),
         or 'quaternion' ")
     end
 
-    return func = ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,
-    obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C,Ftrue,
-    attTransFunc,scen.obsNo)) :: Function
+    return func = ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,
+    obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,
+    scen.C,Ftrue,rotFunc,scen.obsNo)) :: Function
 end
 
-function LMC(attitudes :: Array{Float64,2},
-    un :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    uu :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    uv :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    Area :: Union{Array{Float64,2}, Array{Float64,1}},
-    nu :: Union{Array{Float64,2}, Array{Float64,1}},
-    nv :: Union{Array{Float64,2}, Array{Float64,1}},
-    Rdiff :: Union{Array{Float64,2}, Array{Float64,1}},
-    Rspec :: Union{Array{Float64,2}, Array{Float64,1}},
-    usun :: Array{Float64,1},
-    uobs :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    d :: Union{Array{Float64,2}, Array{Float64,1}},
-    C :: Float64,
-    Ftrue :: Array{Float64,1},
-    attTransFunc :: Function,
-    obsNo :: Int64)
+function constraintGen(obj :: targetObject, scen :: spaceScenario,
+    trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0)
+
+    visGroup = findVisGroup(obj,scen,trueAttitude)
+end
+
+function LMC(attitudes :: Array{Num,2} where {Num <: Number},
+    un :: MatOrVecs,
+    uu :: MatOrVecs,
+    uv :: MatOrVecs,
+    Area :: MatOrVec,
+    nu :: MatOrVec,
+    nv :: MatOrVec,
+    Rdiff :: MatOrVec,
+    Rspec :: MatOrVec,
+    usun :: Vec,
+    uobs :: MatOrVecs,
+    d :: MatOrVec,
+    C :: Num where {Num <: Number},
+    Ftrue :: Vec,
+    rotFunc :: Function where {Num <: Number},
+    obsNo :: Int)
 
     cost = Array{Float64,1}(undef,size(attitudes,2))
+
     for i = 1:size(attitudes)[2]
-        cost[i] = LMC(attitudes[:,i],un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,
-            Ftrue,attTransFunc,obsNo)
+        (usunb,uobsb) = _toBodyFrame(view(attitudes,:,i),usun,uobs,rotFunc)
+        cost[i] = sum(((_Fobs(un,uu,uv,Area,nu,nv,Rdiff,Rspec,usunb,uobsb,d,C) -
+         Ftrue)./(Ftrue .+ 1e-50)).^2)
     end
     return cost
 end
 
-function LMC(attitude :: Array{Float64,1},
-    un :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    uu :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    uv :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    Area :: Union{Array{Float64,2}, Array{Float64,1}},
-    nu :: Union{Array{Float64,2}, Array{Float64,1}},
-    nv :: Union{Array{Float64,2}, Array{Float64,1}},
-    Rdiff :: Union{Array{Float64,2}, Array{Float64,1}},
-    Rspec :: Union{Array{Float64,2}, Array{Float64,1}},
-    usun :: Array{Float64,1},
-    uobs :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    d :: Union{Array{Float64,2}, Array{Float64,1}},
-    C :: Float64,
-    Ftrue :: Array{Float64,1},
-    attTransFunc :: Function,
-    obsNo :: Int64)
-
-    return sum(((Fobs(attTransFunc(attitude),un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C) -
-        Ftrue)./(Ftrue .+ 1e-50)).^2)
-end
-
-function LMC(attitudes :: Union{Array{Array{Float64,1},1},Array{quaternion,1},Array{MRP,1},Array{GRP,1},Array{DCM,1}},
-    un :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    uu :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    uv :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    Area :: Union{Array{Float64,2}, Array{Float64,1}},
-    nu :: Union{Array{Float64,2}, Array{Float64,1}},
-    nv :: Union{Array{Float64,2}, Array{Float64,1}},
-    Rdiff :: Union{Array{Float64,2}, Array{Float64,1}},
-    Rspec :: Union{Array{Float64,2}, Array{Float64,1}},
-    usun :: Array{Float64,1},
-    uobs :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    d :: Union{Array{Float64,2}, Array{Float64,1}},
-    C :: Float64,
-    Ftrue :: Array{Float64,1},
-    attTransFunc :: Function,
-    obsNo :: Int64)
+function LMC(attitudes :: Array{T,1} where {T <: Union{Vec,quaternion,MRP,GRP,DCM}},
+    un :: MatOrVecs,
+    uu :: MatOrVecs,
+    uv :: MatOrVecs,
+    Area :: MatOrVec,
+    nu :: MatOrVec,
+    nv :: MatOrVec,
+    Rdiff :: MatOrVec,
+    Rspec :: MatOrVec,
+    usun :: Vec,
+    uobs :: MatOrVecs,
+    d :: MatOrVec,
+    C :: Num where {Num <: Number},
+    Ftrue :: Vec,
+    rotFunc :: Function where {Num <: Number},
+    obsNo :: Int)
 
     cost = Array{Float64,1}(undef,length(attitudes))
     for i = 1:length(attitudes)
-        cost[i] = LMC(attitudes[i],un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,
-            Ftrue,attTransFunc,obsNo)
+        (usunb,uobsb) = _toBodyFrame(attitudes[i],usun,uobs,rotFunc)
+        cost[i] = sum(((_Fobs(un,uu,uv,Area,nu,nv,Rdiff,Rspec,usunb,uobsb,d,C) -
+         Ftrue)./(Ftrue .+ 1e-50)).^2)
     end
 
     return cost
 end
 
-function LMC(attitude :: Union{quaternion,MRP,GRP,DCM},
-    un :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    uu :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    uv :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    Area :: Union{Array{Float64,2}, Array{Float64,1}},
-    nu :: Union{Array{Float64,2}, Array{Float64,1}},
-    nv :: Union{Array{Float64,2}, Array{Float64,1}},
-    Rdiff :: Union{Array{Float64,2}, Array{Float64,1}},
-    Rspec :: Union{Array{Float64,2}, Array{Float64,1}},
-    usun :: Array{Float64,1},
-    uobs :: Union{Array{Float64,2}, Array{Array{Float64,1},1}},
-    d :: Union{Array{Float64,2}, Array{Float64,1}},
-    C :: Float64,
-    Ftrue :: Array{Float64,1},
-    attTransFunc :: Function,
-    obsNo :: Int64)
+function LMConstr(attitudes :: Array{Num,2} where {Num <: Number},
+    un :: MatOrVecs,
+    usun :: Vec,
+    uobs :: MatOrVecs,
+    rotFunc :: Function where {Num <: Number},
+    visGroup :: Array{Bool,2},
+    obsNo :: Int,
+    facetNo :: Int)
 
-    return sum(((Fobs(attTransFunc(attitude).A,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C) -
-        Ftrue)./(Ftrue .+ 1e-50)).^2)
+    constr = Array{Float64,1}(undef,size(attitudes,2))
+
+    for i = 1:size(attitudes)[2]
+        constr[i] = visPenaltyFunction(view(attitudes,:,i),un,usun,uobs,rotFunc,visGroup,obsNo,facetNo)
+    end
+    return constr
 end
 
 """
@@ -1233,36 +1231,32 @@ end
 
   CODE -----------------------------------------------------------------
 """
-function Fobs(A :: Union{Array{Float64,2},Array{Float64,1},DCM,MRP,GRP,quaternion},
-    obj :: targetObject, scen :: spaceScenario, a=1, f=1)
+function Fobs(att :: anyAttitude, obj :: targetObject, scen :: spaceScenario, a=1, f=1)
 
-    if (typeof(A) == Array{Float64,1}) & (length(A) == 3)
-        return Fobs(any2A(A,MRP,a,f),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
-        obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
-    elseif (typeof(A) == Array{Float64,1}) & (length(A) == 4)
-        return Fobs(any2A(A,quaternion),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
-        obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
-    elseif (typeof(A) == Array{Float64,2}) & (size(A) == (3,3))
-        return Fobs(any2A(A,DCM),obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
-        obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
-    elseif typeof(A) <: Union{DCM,MRP,GRP,quaternion}
-        return Fobs(any2A(A).A,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,
-        obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C)
+    if typeof(att) <: Union{DCM,MRP,GRP,quaternion}
+        (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,typeof(att),a,f)
+    elseif typeof(att) <: Mat
+        (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,DCM)
+    elseif (typeof(att) <: Vec) & (length(att) == 3)
+        (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,GRP,a,f)
+    elseif (typeof(att) <: Vec) & (length(att) == 4)
+        (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,quaternion)
     else
         error("Please provide a valid attitude. Attitudes must be represented
         as a single 3x1 or 4x1 float array, a 3x3 float array, or any of the
         custom attitude types defined in the attitueFunctions package.")
     end
+
+    return _Fobs(obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
+    obj.Rdiff,obj.Rspec,usun,uobs,scen.d,scen.C)
 end
 
-function Fobs(A :: Array{Float64,2}, un :: Array{Float64,2}, uu :: Array{Float64,2},
-    uv :: Array{Float64,2}, Area :: Array{Float64,2}, nu :: Array{Float64,2},
-    nv :: Array{Float64,2}, Rdiff :: Array{Float64,2}, Rspec :: Array{Float64,2},
-    usunI :: Array{Float64,1}, uobsI :: Array{Float64,2}, d :: Array{Float64,2},
+function _Fobs(un :: Mat, uu :: Mat, uv :: Mat, Area :: Mat, nu :: Mat,
+    nv :: Mat, Rdiff :: Mat, Rspec :: Mat, usun :: Vec, uobs :: Mat, d :: Mat,
     C :: Float64)
 
-    usun = A*usunI
-    uobs = A*uobsI
+    # usun = A*usunI
+    # uobs = A*uobsI
 
     check1 = usun'*un .<= 0
     check2 = uobs'*un .<= 0
@@ -1310,29 +1304,20 @@ function Fobs(A :: Array{Float64,2}, un :: Array{Float64,2}, uu :: Array{Float64
     return Ftotal[:]
 end
 
-function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
-    uum :: Array{Array{Float64,1},1}, uvm :: Array{Array{Float64,1},1},
-    Area :: Array{Float64,1}, nu :: Array{Float64,1}, nv :: Array{Float64,1},
-    Rdiff :: Array{Float64,1}, Rspec :: Array{Float64,1},
-    usunI :: Array{Float64,1}, uobsI :: Array{Array{Float64,1},1},
-    d :: Array{Float64,1}, C :: Float64)
+function _Fobs(unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs,
+    Area :: Vec, nu :: Vec, nv :: Vec, Rdiff :: Vec, Rspec :: Vec,
+    usun :: Vec, uobst :: ArrayOfVecs, d :: Vec, C :: Float64)
 
     # Ftotal = Array{Float64,1}(undef,length(uobsI))
-    Ftotal = zeros(length(uobsI),)
-    usun = A*usunI
-    uobst = Array{Array{Float64,1},1}(undef,length(uobsI))
+    Ftotal = zeros(length(uobst),)
     uh = Array{Float64,1}(undef,3)
-
-    for i = 1:length(uobsI)
-        uobst[i] = A * uobsI[i]
-    end
 
     for i = 1:length(unm)
         un = unm[i]
         uv = uvm[i]
         uu = uum[i]
 
-        for j = 1:length(uobsI)
+        for j = 1:length(uobst)
             uobs = uobst[j]
 
             check1 = dot(usun,un) < 0
@@ -1379,6 +1364,9 @@ function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
                 end
                 temp = C/(d[j]^2)*(pspecnum/(usdun + uodun - (usdun)*(uodun)) +
                 pdiff)*(usdun)*Area[i]*(uodun)
+                if temp > 1e-6
+                    @infiltrate
+                end
                 Ftotal[j] += temp
             end
 
@@ -1390,9 +1378,79 @@ function Fobs(A :: Array{Float64,2}, unm :: Array{Array{Float64,1},1},
     return Ftotal
 end
 
+function visPenaltyFunc(att :: Vec, un :: MatOrVecs, usun :: Vec, uobs :: MatOrVecs,
+    rotFunc :: Function, visGroup :: Array{Bool,2}, obsNo :: Int, facetNo :: Int)
+
+    constr = max.(visConstraint(att, un, usun, uobs, rotFunc, visGroup, obsNo, facetNo),0)
+    return sum(constr)
+end
+
+function visConstraint(att :: Vec, un :: Mat, usun :: Vec, uobs :: Mat, rotFunc :: Function,
+    visGroup :: Array{Bool,2}, obsNo :: Int, facetNo :: Int)
+
+
+    (usunb,uobsb) = _toBodyFrame(att,usun,uobs,rotFunc)
+    ind = [1;1]
+    constr = zeros((obsNo+1)*facetNo,)
+    for i = 1:(obsNo+1)*facetNo
+        @infiltrate
+        if visGroup[ind[1],ind[2]]
+            if ind[1] == (obsNo + 1)
+                constr[i] = dot(view(un,:,ind[2]),-usunb)
+            else
+                constr[i] = dot(view(un,:,ind[2]),-view(uobsb,:,ind[1]))
+            end
+        else
+            if ind[1] == (obsNo + 1)
+                constr[i] = dot(view(un,:,ind[2]),usunb)
+            else
+                constr[i] = dot(view(un,:,ind[2]),view(uobsb,:,ind[1]))
+            end
+        end
+
+        ind[1] += 1
+        if ind[1] > (obsNo + 1)
+            ind[1] = 1
+            ind[2] += 1
+        end
+    end
+    return constr
+end
+
+function visConstraint(att :: Vec, un :: ArrayOfVecs, usun :: Vec, uobs :: ArrayOfVecs,
+    rotFunc :: Function, visGroup :: Array{Bool,2}, obsNo :: Int, facetNo :: Int)
+
+    (usunb,uobsb) = _toBodyFrame(att,usun,uobs,rotFunc)
+    ind = [1;1]
+    constr = zeros((obsNo+1)*facetNo,)
+
+    for i = 1:(obsNo+1)*facetNo
+        if visGroup[ind[1],ind[2]]
+            if ind[1] == (obsNo + 1)
+                constr[i] = dot(un[ind[2]],-usunb)
+            else
+                constr[i] = dot(un[ind[2]],-uobsb[ind[1]])
+            end
+        else
+            if ind[1] == (obsNo + 1)
+                constr[i] = dot(un[ind[2]],usunb)
+            else
+                constr[i] = dot(un[ind[2]],uobsb[ind[1]])
+            end
+        end
+
+        ind[1] += 1
+        if ind[1] > (obsNo + 1)
+            ind[1] = 1
+            ind[2] += 1
+        end
+    end
+    return constr
+end
+
 function checkConvergence(OptResults :: optimizationResults; attitudeThreshold = 5)
 
-    if typeof(OptResults.trueAttitude) == Array{Float64,1}
+    if typeof(OptResults.trueAttitude) <: Vec
         if size(OptResults.trueAttitude) == (4,)
             trueAttitude = OptResults.trueAttitude
         elseif size(OptResults.trueAttitude) == (3,)
@@ -1480,7 +1538,7 @@ function checkConvergence(OptResults :: optimizationResults; attitudeThreshold =
 end
 
 function _checkConvergence(AOpt :: Union{quaternion,DCM,MRP,GRP},
-     trueAttitude :: Array{Float64,1}; attitudeThreshold = 5)
+     trueAttitude :: Vec; attitudeThreshold = 5)
 
     if typeof(AOpt) == quaternion
         qOpt = AOpt
@@ -1496,8 +1554,7 @@ function _checkConvergence(AOpt :: Union{quaternion,DCM,MRP,GRP},
     return _checkConvergence(q, trueAttitude, attitudeThreshold = 5)
 end
 
-function _checkConvergence(qOpt :: Array{Float64,1},
-     trueAttitude :: Array{Float64,1}; attitudeThreshold = 5)
+function _checkConvergence(qOpt :: Vec, trueAttitude :: Vec; attitudeThreshold = 5)
 
     if length(qOpt) == 4
         optErrVec = attitudeErrors(trueAttitude,qOpt)
@@ -1513,7 +1570,7 @@ function _checkConvergence(qOpt :: Array{Float64,1},
     end
 end
 
-function plotSat(obj :: targetObjectFull, scen :: spaceScenario, A :: Array{Float64,2})
+function plotSat(obj :: targetObjectFull, scen :: spaceScenario, A :: Mat)
 
     # if typeof(s) != MSession
     #
@@ -1535,6 +1592,50 @@ function plotSat(obj :: targetObjectFull, scen :: spaceScenario, A :: Array{Floa
 
         sat = sat.plot()
         """)
+end
+
+function toBodyFrame(att :: anyAttitude, usun :: Vec, uobs :: MatOrVecs, a = 1, f = 1)
+
+    if (typeof(att) <: Vec) & (length(att) == 3)
+        rotFunc = ((A,v) -> p2A(A,a,f)*v)
+    elseif ((typeof(att) <: Vec) & (length(att) == 4)) | (typeof(att) == quaternion)
+        rotFunc = qRotate
+    elseif (typeof(att) <: Mat) & (size(att) == (3,3))
+        rotFunc = ((A,v) -> A*v)
+    elseif typeof(att) <: Union{DCM,MRP,GRP}
+        rotFunc = ((A,v) -> any2A(A).A*v)
+    else
+        error("Please provide a valid attitude. Attitudes must be represented
+        as a single 3x1 or 4x1 float array, a 3x3 float array, or any of the
+        custom attitude types defined in the attitueFunctions package.")
+    end
+    return _toBodyFrame(att,usun,uobs,rotFunc)
+end
+
+function _toBodyFrame(att :: anyAttitude, usun :: Vec, uobs :: ArrayOfVecs, rotFunc :: Function)
+
+    usunb = rotFunc(att,usun)
+
+    uobsb = similar(uobs)
+
+    for i = 1:length(uobs)
+        uobsb[i] = rotFunc(att,uobs[i])
+    end
+
+    return usunb, uobsb
+end
+
+function _toBodyFrame(att :: anyAttitude, usun :: Vec, uobs :: Mat, rotFunc :: Function)
+
+    usunb = rotFunc(att,view(usun,:))
+
+    uobsb = similar(uobs)
+
+    for i = 1:size(uobs,2)
+        uobsb[:,i] = rotFunc(A,view(uobs,:,i))
+    end
+
+    return usunb, uobsb
 end
 
 # in progress
@@ -1574,7 +1675,7 @@ function kmeans(x :: Union{Array{MRP,1},Array{GRP,1}}, ncl)
     return kmeans(temp,ncl)
 end
 
-function kmeans(x :: Array{Array{Float64,1},1}, ncl)
+function kmeans(x :: ArrayOfVecs, ncl)
 
     temp = Array{Float64,2}(undef,length(x[1]),length(x))
     for i = 1:length(x)
@@ -1583,7 +1684,7 @@ function kmeans(x :: Array{Array{Float64,1},1}, ncl)
     return kmeans(temp,ncl)
 end
 
-function quaternionDistance(q :: Array{Array{Float64,1},1})
+function quaternionDistance(q :: ArrayOfVecs)
     dist = Array{Float64,2}(undef,length(q),length(q))
     for i = 1:length(q)
         for j = i:length(q)
@@ -1594,7 +1695,7 @@ function quaternionDistance(q :: Array{Array{Float64,1},1})
     return dist
 end
 
-function quaternionDistance(q1 :: Array{Array{Float64,1},1}, q2 :: Array{Array{Float64,1},1})
+function quaternionDistance(q1 :: ArrayOfVecs, q2 :: ArrayOfVecs)
     dist = Array{Float64,2}(undef,length(q1),length(q2))
     for i = 1:length(q1)
         for j = i:length(q2)
