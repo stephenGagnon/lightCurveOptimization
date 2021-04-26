@@ -432,7 +432,8 @@ function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = fal
     Parameterization = quaternion, algorithm = "MPSO_cluster",
     initMethod = "random", saveFullHist = false)
 
-    optimizationOptions(vectorizeOptimization,vectorizeCost,Parameterization,useMPSO,initMethod)
+    optimizationOptions(vectorizeOptimization,vectorizeCost,Parameterization,
+    algorithm,initMethod,saveFullHist)
 end
 
 struct optimizationResults
@@ -441,7 +442,7 @@ struct optimizationResults
     object :: targetObject
     objectFullData :: targetObjectFull
     scenario :: spaceScenario
-    PSO_params :: Union{PSO_parameters,GB_params}
+    PSO_params :: Union{PSO_parameters,GB_parameters}
     trueAttitude
     options :: optimizationOptions
 end
@@ -470,8 +471,8 @@ function PSO_cluster(x :: Union{Mat,ArrayOfVecs,Array{MRP,1},Array{GRP,1}},
     end
 
     if typeof(clxOptHist) == Array{Array{Array{Float64,1},1},1}
-        clxOptHistOut = Array{Array{Float64,2},1}(undef,length(xHist))
-        for i = 1:length(xHist)
+        clxOptHistOut = Array{Array{Float64,2},1}(undef,length(clxOptHist))
+        for i = 1:length(clxOptHist)
             clxOptHistOut[i] = hcat(clxOptHist[i]...)
         end
     else
@@ -1096,7 +1097,7 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_parame
     return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
 end
 
-function GBO()
+function GBO(x :: ArrayOfVecs, costFunc :: Function, constFunc :: Function, opt :: GB_parameters)
 
 end
 
@@ -1115,9 +1116,17 @@ function costFuncGen(obj :: targetObject, scen :: spaceScenario,
         or 'quaternion' ")
     end
 
-    return func = ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,
-    obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,
-    scen.C,Ftrue,rotFunc,scen.obsNo)) :: Function
+    if any(options.algorithm .== ["MPSO","PSO_cluster"])
+        return ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,
+        obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,
+        scen.C,Ftrue,rotFunc,scen.obsNo)) :: Function
+    elseif any(options.algorithm .== [""])
+        return ((att,grad) -> _LMC(att,grad,obj.nvecs,obj.uvecs,obj.vvecs,
+        obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,
+        scen.C,Ftrue,scen.obsNo)) :: Function
+    else
+        error("Please provide a valid optimization algorithm")
+    end
 end
 
 function constraintGen(obj :: targetObject, scen :: spaceScenario,
@@ -1146,9 +1155,8 @@ function LMC(attitudes :: Array{Num,2} where {Num <: Number},
     cost = Array{Float64,1}(undef,size(attitudes,2))
 
     for i = 1:size(attitudes)[2]
-        (usunb,uobsb) = _toBodyFrame(view(attitudes,:,i),usun,uobs,rotFunc)
-        cost[i] = sum(((_Fobs(un,uu,uv,Area,nu,nv,Rdiff,Rspec,usunb,uobsb,d,C) -
-         Ftrue)./(Ftrue .+ 1e-50)).^2)
+        _LMC(view(attitudes,:,i), un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun,
+            uobs, d, C, Ftrue, rotFunc, obsNo :: Int)
     end
     return cost
 end
@@ -1172,12 +1180,34 @@ function LMC(attitudes :: Array{T,1} where {T <: Union{Vec,quaternion,MRP,GRP,DC
 
     cost = Array{Float64,1}(undef,length(attitudes))
     for i = 1:length(attitudes)
-        (usunb,uobsb) = _toBodyFrame(attitudes[i],usun,uobs,rotFunc)
-        cost[i] = sum(((_Fobs(un,uu,uv,Area,nu,nv,Rdiff,Rspec,usunb,uobsb,d,C) -
-         Ftrue)./(Ftrue .+ 1e-50)).^2)
+         _LMC(attitudes[i], un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun,
+             uobs, d, C, Ftrue, rotFunc, obsNo :: Int)
+    end
+    return cost
+end
+
+function _LMC(att :: anyAttitude, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs,
+    Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec,
+    usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Num where {Num <: Number},
+    Ftrue :: Vec, rotFunc :: Function where {Num <: Number}, obsNo :: Int)
+
+    (usunb,uobsb) = _toBodyFrame(att,usun,uobs,rotFunc)
+    return sum(((_Fobs(un,uu,uv,Area,nu,nv,Rdiff,Rspec,usunb,uobsb,d,C) -
+     Ftrue)./(Ftrue .+ 1e-50)).^2)
+end
+
+function _LMC(att :: Vec, grad :: Vec, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs,
+    Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec,
+    usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Num where {Num <: Number},
+    Ftrue :: Vec, obsNo :: Int)
+
+    Fobs_ , dFobs_ = dFobs(att,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+
+    if length(grad)>0
+        grad[:] = sum( (2*((Fobs_ - Ftrue)./(Ftrue .+ 1e-50))*(dFobs_./(Ftrue .+ 1e-50))) , dims = 1)[:]
     end
 
-    return cost
+    return sum(((Fobs_ - Ftrue)./(Ftrue .+ 1e-50)).^2)
 end
 
 function LMConstr(attitudes :: Array{Num,2} where {Num <: Number},
@@ -1196,6 +1226,7 @@ function LMConstr(attitudes :: Array{Num,2} where {Num <: Number},
     end
     return constr
 end
+
 
 """
   Fraction of visible light that strikes a facet and is reflected to the
@@ -1376,6 +1407,151 @@ function _Fobs(unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs,
     # sum(F,dims=2)
 
     return Ftotal
+end
+
+"""
+  calculates the sensitivity of the reflectance from one facet due to small
+  changes in attitude
+
+  INPUTS ---------------------------------------------------------------
+
+  A -- the attitude matrix (inertial to body)
+
+  geometry -- a structure containg various parameters describing the
+     relative possitions and directions of the observer and sun in the
+     inertial frame. The comonenets are as follows:
+
+     usun -- vector from rso to sun (inertial)
+     uobs -- vector from rso to the jth observer (inertial)
+     d -- distance from rso to observer j
+     C -- sun power per square meter
+
+  facet -- a structure contining various parameters describing the facet
+    being observed
+
+     Area -- facet area
+     unb -- surface normal of the ith facet (body frame)
+     uub,uvn body -- in plane body vectors completing the right hand rule
+     Rdiff,Rspec -- spectral and diffusion parameters of the facet
+     nv,nu -- coefficients to determine the in-plane distribution of
+        spectral reflection
+
+  OUTPUTS --------------------------------------------------------------
+
+  dFobs -- the sensitivty vector of the refelctance (Fobs) wrt small changes
+     in attitude
+
+  dpt -- the sensitifity vector of the brightness (rho) wrt small changes
+  in the attitude
+
+  Ft -- the total reflectance of the facet
+
+  Code -----------------------------------------------------------------
+"""
+function dFobs(att :: Vec, unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs,
+    Area :: Vec, nu :: Vec, nv :: Vec, Rdiff :: Vec, Rspec :: Vec, usun :: Vec,
+    uobst :: ArrayOfVecs, d :: Vec, C :: Float64)
+
+
+    Ftotal = zeros(length(uobst),)
+    dFtotal = zeros(length(uobst),3)
+
+    uh = Array{Float64,1}(undef,3)
+    A = p2A(att)
+
+    for i = 1:length(unm)
+        un = A*unm[i]
+        uv = A*uvm[i]
+        uu = A*uum[i]
+
+        for j = 1:length(uobst)
+            uobs = uobst[j]
+
+            check1 = dot(usun,un) < 0
+            check2 = dot(uobs,un) < 0
+            visFlag = check1 | check2
+
+            if visFlag
+
+            else
+                # calculate the half angle vector
+                # uh = (usun + uobs)./norm(usun + uobs)
+
+
+                usduo = dot(usun,uobs)
+                uh[1] = (usun[1] + uobs[1])/sqrt(2 + 2*usduo)
+                uh[2] = (usun[2] + uobs[2])/sqrt(2 + 2*usduo)
+                uh[3] = (usun[3] + uobs[3])/sqrt(2 + 2*usduo)
+
+                usuh = dot(usun,uh)
+                # define dot products and their derivatives
+                uhun = dot(uh,un)
+                duhun = dDotdp(uh,un,att)
+
+                uhuu = dot(uh,uu)
+                duhuu = dDotdp(uh,uu,att)
+
+                uhuv = dot(uh,uv)
+                duhuv = dDotdp(uh,uv,att)
+
+                unus = dot(usun,un)
+                dunus = dDotdp(usun,un,att)
+
+                unuo = dot(un,uobs)
+                dunuo = dDotdp(un,uobs,att)
+
+
+                # diffuse reflection
+                k = ((28*Rdiff[i])/(23*pi))*(1 - Rspec[i])
+                pdiff = k*(1 - (1 - unus/2)^5)*(1 - (1 - unuo/2)^5)
+
+                dpdiff = (5/2)*k*((((1-.5*unus)^4)*(1-(1-.5*unuo)^5)*dunus) +
+                (((1-.5*unuo)^4)*(1 - (1 - .5*unus)^5)*dunuo))
+
+                # spectral reflection
+
+                # calculate numerator and account for the case where the half angle
+                # vector lines up with the normal vector
+
+                K = sqrt((nu[i] + 1)*(nv[i] + 1))/(8*pi)
+                Fref = Rspec[i] + (1-Rspec[i])*(1-usuh)^5
+                if uhun == 1 #(uhun≈1)
+                    num = K*Fref
+                    dnum = 0
+                else
+                    fac = (nu[i]*uhuu^2 + nv[i]*uhuv^2)/(1 - uhun^2)
+                    dfac = ((2*nu*uhuu*duhuu + 2*nv*uhuv*duhuv)*(1-uhun^2) +
+                     2*uhun*(nu*uhuu^2 + nv*uhuv^2)*duhun)/(1-uhun^2)^2
+                    num = K*Fref*uhun^(fac)
+                    dnum = fac*num*duhun/uhun + num*log(uhun)*dfac
+                end
+
+                den = (usdun + uodun - (usdun)*(uodun))
+                dden = (1-unuo)*dunus + (1-unus)*dunuo
+
+                pspec = num/den
+                dpspec = (den*dnum-num*dden)/(den^2)
+
+                ptotal = pspec + pdiff
+                dptotal = dpdiff + dpspec
+
+                Fsun = C*ptotal*(unus)
+                dFsun = C*(dptotal*unus + ptotal*dunus)
+
+                Fobs_ = Fsun/(d[j]^2)*Area[i]*(unuo)
+                dFobs_ = Area[i]/(d[j]^2)*(dFsun*unuo + Fsun*dunuo)
+
+                if temp > 1e-6
+                    @infiltrate
+                end
+
+                Ftotal[j] += Fobs_
+                dFtotal[j,:] += dFobs_
+            end
+
+        end
+    end
+    return Ftotal, dFtotal
 end
 
 function visPenaltyFunc(att :: Vec, un :: MatOrVecs, usun :: Vec, uobs :: MatOrVecs,
