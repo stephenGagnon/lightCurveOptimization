@@ -1,27 +1,27 @@
 module lightCurveOptimization
-
 using LinearAlgebra
 using Parameters
-using Infiltrator
 using Random
+using Distributions
 using Distances
-using StatsBase
-using MATLAB
 using attitudeFunctions
 using Plots
 using Munkres
 using NLopt
 using visibilityGroups
+using Infiltrator
+using Statistics
+using MATLABfunctions
+using ForwardDiff
 
 import Distances: evaluate
 
 import Clustering: kmeans, kmedoids, assignments
 
-export costFuncGen, PSO_cluster, MPSO_cluster, simpleScenarioGenerator, Fobs,
-    optimizationOptions, optimizationResults, targetObject, targetObjectFull,
-    spaceScenario, PSO_parameters, GB_parameters, PSO_results, Convert_PSO_results,
-    plotSat, simpleSatellite, simpleScenario, checkConvergence, LMC, toBodyFrame,
-    visPenaltyFunc, visConstraint
+export costFuncGenPSO,costFuncGenNLopt, PSO_cluster, MPSO_cluster,
+    simpleScenarioGenerator, Fobs, optimizationOptions, optimizationResults,
+    targetObject, targetObjectFull, spaceScenario, PSO_parameters, GB_parameters, PSO_results, Convert_PSO_results, plotSat, simpleSatellite, simpleScenario, checkConvergence, LMC, _LMC, dFobs, Fobs, _MPSO_cluster,visPenaltyFunc, visConstraint, constraintGen, GB_results, MRPScatterPlot, visGroupAnalysisFunction, _Fobs_Analysis, MPSO_AVC, _MPSO_AVC,_PSO_cluster
+
 
 const Vec{T<:Number} = AbstractArray{T,1}
 const Mat{T<:Number} = AbstractArray{T,2}
@@ -30,6 +30,7 @@ const ArrayofMats{T<:Number} = Array{M,1} where M <: Mat
 const MatOrVecs = Union{Mat,ArrayOfVecs}
 const MatOrVec = Union{Mat,Vec}
 const anyAttitude = Union{Mat,Vec,DCM,MRP,GRP,quaternion}
+const Num = N where N <: Number
 
 struct targetObject
     facetNo :: Int64
@@ -232,6 +233,9 @@ function simpleSatellite(;vectorized = false)
     # moment of Intertia about the COM
     J = J_tot  - (m_dish + m_bus + 2*m_SP).*((COM'*COM).*Matrix(1.0I,3,3) .- COM*COM')
 
+    fullStruct = targetObjectFull(facetNo,vertices,facetVerticesList,Area,nvecs,
+    vvecs,uvecs,nu,nv,Rdiff,Rspec,J,bodyFrame)
+
     if !vectorized
         Area = Area[:]
         nu = nu[:]
@@ -251,10 +255,8 @@ function simpleSatellite(;vectorized = false)
             vvecs[i] = vvecstemp[:,i]
         end
     end
-
     simpleStruct = targetObject(facetNo,Area,nvecs,vvecs,uvecs,nu,nv,Rdiff,Rspec,J,bodyFrame)
-    fullStruct = targetObjectFull(facetNo,vertices,facetVerticesList,Area,nvecs,
-    vvecs,uvecs,nu,nv,Rdiff,Rspec,J,bodyFrame)
+
     return simpleStruct, fullStruct
 end
 
@@ -267,8 +269,8 @@ function simpleScenario(;vectorized = false)
     obsNo = 4
 
     # distance from observer to RSO
-    obsDist = 35000*1000*ones(1,obsNo)
-
+    # obsDist = 35000*1000*ones(1,obsNo)
+    obsDist = 2000*1000*ones(1,obsNo)
     # body vectors from rso to observer (inertial)
     r = sqrt(2)/2
     v = sqrt(3)/3
@@ -327,7 +329,8 @@ end
 end
 
 @with_kw struct GB_parameters
-    a :: Nothing = nothing
+    maxeval :: Num = 100000
+    maxtime :: Num = 5
 end
 
 struct PSO_results
@@ -339,6 +342,12 @@ struct PSO_results
     clusterfOptHist :: Array{Vec,1}
     xOpt :: Union{Vec,MRP,GRP,quaternion,DCM}
     fOpt :: Float64
+end
+
+struct GB_results
+    fOpt :: Num where {Num <: Number}
+    xOpt :: Vec
+    ref
 end
 
 function Convert_PSO_results(results :: PSO_results, attType, a = 1,f = 1)
@@ -423,17 +432,22 @@ struct optimizationOptions
     algorithm
     # choose method for particle initialization
     initMethod
-    # determines if full particle history at each interation is saved in particle
-    # based optimization
+    # determines if full particle history at each interation is saved in particle based optimization
     saveFullHist
+    # cost function parameter
+    delta
+    # boolean to determine if noise should be considered
+    noise
+    # mean value of noise
+    mean
+    # standard deviation of noise
+    std
 end
 
-function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = false,
-    Parameterization = quaternion, algorithm = "MPSO_cluster",
-    initMethod = "random", saveFullHist = false)
+function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = false, Parameterization = quaternion, algorithm = :MPSO_cluster, initMethod = "random", saveFullHist = false,delta = 1e-50,noise = false, mean = 0, std = 1e-15)
 
     optimizationOptions(vectorizeOptimization,vectorizeCost,Parameterization,
-    algorithm,initMethod,saveFullHist)
+    algorithm,initMethod,saveFullHist,delta,noise,mean,std)
 end
 
 struct optimizationResults
@@ -856,8 +870,7 @@ function _PSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_paramet
     return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
 end
 
-function MPSO_cluster(x :: Union{Array{quaternion,1}, ArrayOfVecs},
-    costFunc :: Function, opt :: PSO_parameters)
+function MPSO_cluster(x :: Union{Array{quaternion,1}, ArrayOfVecs}, costFunc :: Function, clusterFunc :: Function, opt :: PSO_parameters)
 
     if typeof(x) == Array{quaternion,1}
         temp = Array{Array{Float64,1},1}(undef,length(x))
@@ -871,15 +884,28 @@ function MPSO_cluster(x :: Union{Array{quaternion,1}, ArrayOfVecs},
         temp = x
     end
 
-    xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt = _MPSO_cluster(temp,costFunc,opt)
+    out_vars = _MPSO_cluster(temp,costFunc,clusterFunc,opt)
 
-    if typeof(xHist) == Array{Array{Array{Float64,1},1},1}
-        xHistOut = Array{Array{Float64,2},1}(undef,length(xHist))
-        for i = 1:length(xHist)
-            xHistOut[i] = hcat(xHist[i]...)
-        end
+    if length(out_vars) == 8
+        (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt) = out_vars[3:8]
     else
-        xHistOut = xHist
+        (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt) = out_vars[1:6]
+    end
+    # out_vars is a tuple (xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt)
+    # it can also be a tuple (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt)
+
+    if length(out_vars) == 8 & (typeof(out_vars[1]) == Array{Array{Array{Float64,1},1},1})
+        xHist = Array{Array{Float64,2},1}(undef,length(out_vars[1]))
+        for i = 1:length(out_vars[1])
+            xHist[i] = hcat(out_vars[1][i]...)
+        end
+        fHist = out_vars[2]
+    elseif length(out_vars) == 8
+        xHist = out_vars[1]
+        fHist = out_vars[2]
+    else
+        xHist = nothing
+        fHist = nothing
     end
 
     if typeof(clxOptHist) == Array{Array{Array{Float64,1},1},1}
@@ -891,10 +917,10 @@ function MPSO_cluster(x :: Union{Array{quaternion,1}, ArrayOfVecs},
         clxOptHistOut = clxOptHist
     end
 
-    return PSO_results(xHistOut,fHist,xOptHist,fOptHist,clxOptHistOut,clfOptHist,xOpt,fOpt)
+    return PSO_results(xHist, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt)
 end
 
-function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_parameters)
+function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Function, opt :: PSO_parameters)
 
     # create time vector for cooling and population reduction schedules
     t = LinRange(0,1,opt.tmax)
@@ -914,7 +940,8 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_parame
     while check
 
         # ind = assignments(kmedoids(quaternionDistance(x),opt.Ncl))
-        ind = assignments(kmeans(x,opt.Ncl))
+        # ind = assignments(kmeans(x,opt.Ncl))
+        ind = clusterFunc(x,opt.Ncl)
         if length(unique(ind)) == opt.Ncl
             check = false
         end
@@ -971,18 +998,12 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_parame
         # initalize particle and objective histories
         xHist = Array{typeof(x),1}(undef,opt.tmax)
         fHist = Array{typeof(finit),1}(undef,opt.tmax)
-    else
-        xHist = nothing
-        fHist = nothing
+        xHist[1] = deepcopy(x)
+        fHist[1] = finit
     end
 
     clxOptHist = Array{typeof(x),1}(undef,opt.tmax)
     clfOptHist = Array{typeof(finit),1}(undef,opt.tmax)
-
-    if opt.saveFullHist
-        xHist[1] = deepcopy(x)
-        fHist[1] = finit
-    end
 
     clxOptHist[1] = deepcopy(xopt)
     clfOptHist[1] = fopt
@@ -1044,7 +1065,8 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_parame
         if mod(i+opt.clI-2,opt.clI) == 0
             # dmat = quaternionDistance(x)
             # ind = assignments(kmedoids(quaternionDistance(x),opt.Ncl))
-            ind = assignments(kmeans(x,opt.Ncl))
+            # ind = assignments(kmeans(x,opt.Ncl))
+            ind = clusterFunc(x,opt.Ncl)
         end
 
         # loop through the clusters
@@ -1086,25 +1108,384 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_parame
                     return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
                     clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
                 else
-                    return xHist,fHist,xOptHist[1:i],fOptHist[1:i],
-                    clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
+                    return xOptHist[1:i],fOptHist[1:i], clxOptHist[1:i],clfOptHist[1:i],
+                    xOptHist[i],fOptHist[i]
                 end
             end
         end
 
     end
 
-    return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+    if opt.saveFullHist
+        return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+    else
+        return xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+    end
 end
 
-function GBO(x :: ArrayOfVecs, costFunc :: Function, constFunc :: Function, opt :: GB_parameters)
+function MPSO_AVC(x :: Union{Array{quaternion,1}, ArrayOfVecs}, costFunc :: Function, clusterFunc :: Function, opt :: PSO_parameters)
 
+    if typeof(x) == Array{quaternion,1}
+        temp = Array{Array{Float64,1},1}(undef,length(x))
+        for i = 1:length(x)
+            q = zeros(4,)
+            q[1:3] = x[i].v
+            q[4] = x[i].s
+            temp[i] = q
+        end
+    else
+        temp = x
+    end
+
+    out_vars = _MPSO_AVC(temp,costFunc,clusterFunc,opt)
+
+    if length(out_vars) == 8
+        (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt) = out_vars[3:8]
+    else
+        (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt) = out_vars[1:6]
+    end
+    # out_vars is a tuple (xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt)
+    # it can also be a tuple (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt)
+
+    if length(out_vars) == 8 & (typeof(out_vars[1]) == Array{Array{Array{Float64,1},1},1})
+        xHist = Array{Array{Float64,2},1}(undef,length(out_vars[1]))
+        for i = 1:length(out_vars[1])
+            xHist[i] = hcat(out_vars[1][i]...)
+        end
+        fHist = out_vars[2]
+    elseif length(out_vars) == 8
+        xHist = out_vars[1]
+        fHist = out_vars[2]
+    else
+        xHist = nothing
+        fHist = nothing
+    end
+
+    if typeof(clxOptHist) == Array{Array{Array{Float64,1},1},1}
+        clxOptHistOut = Array{Array{Float64,2},1}(undef,length(clxOptHist))
+        for i = 1:length(clxOptHist)
+            clxOptHistOut[i] = hcat(clxOptHist[i]...)
+        end
+    else
+        clxOptHistOut = clxOptHist
+    end
+
+    return PSO_results(xHist, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt)
 end
 
-function costFuncGen(obj :: targetObject, scen :: spaceScenario,
-    trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0)
+function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Function, opt :: PSO_parameters)
+
+    # create time vector for cooling and population reduction schedules
+    t = LinRange(0,1,opt.tmax)
+
+    grad = Array{Array{Float64,1},1}(undef,length(x))
+    emptyGrad = Array{Array{Float64,1},1}(undef,length(x))
+
+    for i = 1:length(grad)
+        grad[i] = zeros(4)
+        emptyGrad[i] = []
+    end
+
+    # get the objective function values of the inital population
+    finit = costFunc(x,grad)
+    gn = norm.(grad)
+    gn_mean = zeros(opt.Ncl)
+    scale = range(1-.5,stop = 1+.5, length = opt.Ncl)
+    w_scale = similar(scale)
+
+    # initialize the local best for each particle as its inital value
+    Plx = deepcopy(x)
+    Plf = finit
+
+    # initialize clusters
+    check = true
+    ind = Array{Int64,1}(undef,opt.N)
+    iter = 0
+    # dmat = quaternionDistance(x)
+    while check
+
+        # ind = assignments(kmedoids(quaternionDistance(x),opt.Ncl))
+        # ind = assignments(kmeans(x,opt.Ncl))
+        ind = clusterFunc(x,opt.Ncl)
+        if length(unique(ind)) == opt.Ncl
+            check = false
+        end
+        if iter > 1000
+            error("kmedoids unable to sort initial particle distribution into
+            desired number of clusters. Maximum iterations (1000) exceeded")
+        end
+        iter += 1
+    end
+
+
+    cl = 1:opt.Ncl
+
+    # intialize best local optima in each cluster
+    xopt = Array{typeof(x[1]),1}(undef,opt.Ncl)
+    fopt = Array{Float64,1}(undef,opt.Ncl)
+
+    clLeadInd = Array{Int64,1}(undef,opt.Ncl)
+
+    # loop through the clusters
+    for j in unique(ind)
+        # find the best local optima in the cluster particles history
+        clind = findall(ind.==j)
+        clLeadInd[j] = clind[argmin(Plf[findall(ind .== j)])]
+        xopt[j] = deepcopy(Plx[clLeadInd[j]])
+        fopt[j] = Plf[clLeadInd[j]]
+
+
+        gn_mean[j] = mean(gn[clind])
+    end
+
+    im = sortperm(gn_mean)
+
+    for j = 1:opt.Ncl
+        w_scale[j] = scale[findall(im .== j)][1]
+    end
+
+    # initilize global bests
+    Pgx = similar(Plx)
+
+    # loop through all the particles
+    for j = 1:opt.N
+        # randomly choose to follow the local cluster best or another cluster
+        # best in proportion to the user specified epsilon
+        if rand(1)[1] < opt.evec[1] || any(j .== clLeadInd)
+            # follow the local cluster best
+            Pgx[j] = deepcopy(xopt[ind[j]])
+        else
+            # follow a random cluster best
+            Pgx[j] = deepcopy(xopt[cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]])
+        end
+    end
+
+    # store the best solution from the current iteration
+    xOptHist = Array{typeof(xopt[1]),1}(undef,opt.tmax)
+    fOptHist = Array{typeof(fopt[1]),1}(undef,opt.tmax)
+
+    optInd = argmin(fopt)
+
+    xOptHist[1] = deepcopy(xopt[optInd])
+    fOptHist[1] = fopt[optInd]
+
+    if opt.saveFullHist
+        # initalize particle and objective histories
+        xHist = Array{typeof(x),1}(undef,opt.tmax)
+        fHist = Array{typeof(finit),1}(undef,opt.tmax)
+        xHist[1] = deepcopy(x)
+        fHist[1] = finit
+    end
+
+    clxOptHist = Array{typeof(x),1}(undef,opt.tmax)
+    clfOptHist = Array{typeof(finit),1}(undef,opt.tmax)
+
+    clxOptHist[1] = deepcopy(xopt)
+    clfOptHist[1] = fopt
+
+    # inital v is zero
+    w = Array{Array{Float64,1},1}(undef,length(x))
+    for i = 1:length(x)
+        w[i] = [0;0;0]
+    end
+
+    # main loop
+    for i = 2:opt.tmax
+
+        # calculate alpha using the cooling schedule
+        a = opt.av[1]-t[i]*(opt.av[1]-opt.av[2])
+
+        # calculate epsilon using the schedule
+        epsilon = opt.evec[1] - t[i]*(opt.evec[1] - opt.evec[2])
+
+        r = rand(1,2)
+
+        for j = 1:length(x)
+
+            # calcualte the velocity
+            wl = qdq2w(x[j],Plx[j] - x[j])
+            wg = qdq2w(x[j],Pgx[j] - x[j])
+
+            for k = 1:3
+                w[j][k] = w_scale[ind[j]]*(a*w[j][k] + r[1]*(opt.bl)*wl[k] + r[2]*(opt.bg)*wg[k])
+            end
+
+            # w[j] = a*w[j] + r[1]*(opt.bl)*qdq2w(x[j],Plx[j] - x[j]) +
+            #  r[2]*(opt.bg)*qdq2w(x[j],Pgx[j] - x[j])
+            # update the particle positions
+            if norm(w[j]) > 0
+                x[j] = qPropDisc(w[j],x[j])
+            else
+                x[j] = x[j]
+            end
+        end
+
+
+
+
+        # on the appropriate iterations, update the clusters
+        if mod(i+opt.clI-2,opt.clI) == 0
+            # dmat = quaternionDistance(x)
+            # ind = assignments(kmedoids(quaternionDistance(x),opt.Ncl))
+            # ind = assignments(kmeans(x,opt.Ncl))
+            ind = clusterFunc(x,opt.Ncl)
+
+            f = costFunc(x,grad)
+            gn = norm.(grad)
+            gn_mean = zeros(opt.Ncl)
+
+            for j in unique(ind)
+                clind = findall(ind.==j)
+                gn_mean[j] = mean(gn[clind])
+            end
+
+            im = sortperm(gn_mean)
+
+            for j = 1:opt.Ncl
+                w_scale[j] = scale[findall(im .== j)][1]
+            end
+
+
+        else
+            # evalue the objective function for each particle
+            f = costFunc(x,emptyGrad)
+        end
+
+        if opt.saveFullHist
+            # store the current particle population
+            xHist[i] = deepcopy(x)
+            # store the objective values for the current generation
+            fHist[i] = f
+        end
+
+        # update the local best for each particle
+        indl = findall(f .< Plf)
+        Plx[indl] = deepcopy(x[indl])
+        Plf[indl] = f[indl]
+
+
+
+
+        # loop through the clusters
+        for j in unique(ind)
+            # find the best local optima in the cluster particles history
+            clLeadInd[j] = findall(ind .== j)[argmin(Plf[findall(ind .== j)])]
+
+            xopt[j] = deepcopy(Plx[clLeadInd[j]])
+            fopt[j] = Plf[clLeadInd[j]]
+        end
+
+        # loop through all the particles
+        for k = 1:opt.N
+            # randomly choose to follow the local cluster best or another cluster
+            # best in proportion to the user specified epsilon
+            if rand(1)[1] < epsilon || sum(k == clLeadInd) > 0
+                # follow the local cluster best
+                Pgx[k] = deepcopy(xopt[ind[k]])
+            else
+                # follow a random cluster best
+                Pgx[k] = deepcopy(xopt[cl[cl.!=ind[k]][rand([1,opt.Ncl-1])]])
+            end
+        end
+
+        # store the best solution from the current iteration
+        optInd = argmin(fopt)
+        xOptHist[i] = deepcopy(xopt[optInd])
+        fOptHist[i] = fopt[optInd]
+
+        clxOptHist[i] = deepcopy(xopt)
+        clfOptHist[i] = fopt
+
+        if i>10
+            if (abs(fOptHist[i]-fOptHist[i-1]) < opt.tol) &
+                (abs(mean(fOptHist[i-4:i]) - mean(fOptHist[i-9:i-5])) < opt.tol) &
+                (fOptHist[i] < opt.abstol)
+
+                if opt.saveFullHist
+                    return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
+                    clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
+                else
+                    return xOptHist[1:i],fOptHist[1:i], clxOptHist[1:i],clfOptHist[1:i],
+                    xOptHist[i],fOptHist[i]
+                end
+            end
+        end
+
+    end
+
+    if opt.saveFullHist
+        return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+    else
+        return xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+    end
+end
+
+function costFuncGenPSO(obj :: targetObject, scen :: spaceScenario, trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0)
 
     Ftrue = Fobs(trueAttitude, obj, scen, a , f)
+
+    if options.noise
+        Fnoise = rand(Normal(options.mean,options.std),scen.obsNo)
+        Ftrue += Fnoise
+    end
+
+    if (options.Parameterization == MRP) | (options.Parameterization == GRP)
+        rotFunc = ((A,v) -> p2A(A,a,f)*v) :: Function
+        dDotFunc = ((v1,v2,att) -> -dDotdp(v1,v2,-att))
+    elseif options.Parameterization == quaternion
+        rotFunc = qRotate :: Function
+        dDotFunc = ((v1,v2,att) -> qinv(dDotdq(v1,v2,qinv(att))))
+    else
+        error("Please provide a valid attitude representation type. Options are:
+        'MRP' (modified Rodrigues parameters), 'GRP' (generalized Rodrigues parameters),
+        or 'quaternion' ")
+    end
+
+    if options.algorithm == :MPSO_AVC
+
+        if options.vectorizeCost == true
+
+            return (att,grad) -> LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs,obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, options.delta)
+
+        elseif options.vectorizeCost == false
+
+            return (att,grad) -> LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs,obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, options.delta)
+
+        end
+
+    else
+        return ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,
+        obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs, scen.d,scen.C,Ftrue,rotFunc,options.delta)) :: Function
+    end
+end
+
+function costFuncGenNLopt(obj :: targetObject, scen :: spaceScenario, trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0) :: Function
+
+    Ftrue = Fobs(trueAttitude, obj, scen, a , f)
+
+    if options.noise
+        Fnoise = rand(Normal(options.mean,options.std),scen.obsNo)
+        Ftrue += Fnoise
+    end
+
+    if (options.Parameterization == MRP) | (options.Parameterization == GRP)
+        rotFunc = ((A,v) -> p2A(A,a,f)*v) :: Function
+        dDotFunc = ((v1,v2,att) -> -dDotdp(v1,v2,-att))
+    elseif options.Parameterization == quaternion
+        rotFunc = qRotate :: Function
+        dDotFunc = ((v1,v2,att) -> qinv(dDotdq(v1,v2,qinv(att))))
+    else
+        error("Please provide a valid attitude representation type. Options are:
+        'MRP' (modified Rodrigues parameters), 'GRP' (generalized Rodrigues parameters),
+        or 'quaternion' ")
+    end
+
+    return ((att,grad) -> _LMC(att,grad,obj.nvecs,obj.uvecs,obj.vvecs,
+    obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,
+    scen.C,Ftrue,rotFunc,dDotFunc,options.delta, options.Parameterization)) :: Function
+end
+
+function constraintGen(obj :: targetObject, scen :: spaceScenario, trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0)
 
     if (options.Parameterization == MRP) | (options.Parameterization == GRP)
         rotFunc = ((A,v) -> p2A(A,a,f)*v)
@@ -1116,23 +1497,20 @@ function costFuncGen(obj :: targetObject, scen :: spaceScenario,
         or 'quaternion' ")
     end
 
-    if any(options.algorithm .== ["MPSO","PSO_cluster"])
-        return ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,
-        obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,
-        scen.C,Ftrue,rotFunc,scen.obsNo)) :: Function
-    elseif any(options.algorithm .== [""])
-        return ((att,grad) -> _LMC(att,grad,obj.nvecs,obj.uvecs,obj.vvecs,
-        obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,
-        scen.C,Ftrue,scen.obsNo)) :: Function
+    (sunVec,obsVecs) = _toBodyFrame(trueAttitude,scen.sunVec,scen.obsVecs,rotFunc)
+    visGroupTrue = _findVisGroup(obj.nvecs,sunVec,obsVecs,obj.facetNo,scen.obsNo)
+    constrNo = length(findall(visGroupTrue.isConstraint))
+
+    if any(options.algorithm .== [:MPSO,:PSO_cluster])
+        func = ((att) -> LMConstr(att, obj.nvecs, scen.sunVec,
+            scen.obsVecs, rotFunc, visGroupTrue, scen.obsNo, obj.facetNo,constrNo))
+    elseif any(options.algorithm .== [:LD_SLSQP])
+        func = ((result,att,grad) -> _LMConstr(result, att, grad, obj.nvecs, scen.sunVec,
+            scen.obsVecs, rotFunc, visGroupTrue, scen.obsNo, obj.facetNo,constrNo))
     else
         error("Please provide a valid optimization algorithm")
     end
-end
-
-function constraintGen(obj :: targetObject, scen :: spaceScenario,
-    trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0)
-
-    visGroup = findVisGroup(obj,scen,trueAttitude)
+    return func
 end
 
 function LMC(attitudes :: Array{Num,2} where {Num <: Number},
@@ -1149,19 +1527,18 @@ function LMC(attitudes :: Array{Num,2} where {Num <: Number},
     d :: MatOrVec,
     C :: Num where {Num <: Number},
     Ftrue :: Vec,
-    rotFunc :: Function where {Num <: Number},
-    obsNo :: Int)
+    rotFunc :: Function,
+    delta :: Float64)
 
     cost = Array{Float64,1}(undef,size(attitudes,2))
 
     for i = 1:size(attitudes)[2]
-        _LMC(view(attitudes,:,i), un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun,
-            uobs, d, C, Ftrue, rotFunc, obsNo :: Int)
+        cost[i] = _LMC(view(attitudes,:,i), un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun, uobs, d, C, Ftrue, rotFunc, delta)
     end
     return cost
 end
 
-function LMC(attitudes :: Array{T,1} where {T <: Union{Vec,quaternion,MRP,GRP,DCM}},
+function LMC(attitudes :: Array{T,1} where T<:Vec,
     un :: MatOrVecs,
     uu :: MatOrVecs,
     uv :: MatOrVecs,
@@ -1175,58 +1552,244 @@ function LMC(attitudes :: Array{T,1} where {T <: Union{Vec,quaternion,MRP,GRP,DC
     d :: MatOrVec,
     C :: Num where {Num <: Number},
     Ftrue :: Vec,
-    rotFunc :: Function where {Num <: Number},
-    obsNo :: Int)
+    rotFunc :: Function,
+    delta :: Float64)
 
     cost = Array{Float64,1}(undef,length(attitudes))
     for i = 1:length(attitudes)
-         _LMC(attitudes[i], un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun,
-             uobs, d, C, Ftrue, rotFunc, obsNo :: Int)
+         cost[i] = _LMC(attitudes[i], un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun, uobs, d, C, Ftrue, rotFunc, delta)
     end
     return cost
 end
 
-function _LMC(att :: anyAttitude, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs,
-    Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec,
-    usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Num where {Num <: Number},
-    Ftrue :: Vec, rotFunc :: Function where {Num <: Number}, obsNo :: Int)
+function LMC(attitudes :: Array{T,1} where T<:Vec,
+    grad :: Array{T,1} where T<:Vec,
+    un :: MatOrVecs,
+    uu :: MatOrVecs,
+    uv :: MatOrVecs,
+    Area :: MatOrVec,
+    nu :: MatOrVec,
+    nv :: MatOrVec,
+    Rdiff :: MatOrVec,
+    Rspec :: MatOrVec,
+    usun :: Vec,
+    uobs :: MatOrVecs,
+    d :: MatOrVec,
+    C :: Num where {Num <: Number},
+    Ftrue :: Vec,
+    rotFunc :: Function,
+    delta :: Float64,)
 
-    (usunb,uobsb) = _toBodyFrame(att,usun,uobs,rotFunc)
-    return sum(((_Fobs(un,uu,uv,Area,nu,nv,Rdiff,Rspec,usunb,uobsb,d,C) -
-     Ftrue)./(Ftrue .+ 1e-50)).^2)
+    cost = Array{Float64,1}(undef,length(attitudes))
+    for i = 1:length(attitudes)
+         cost[i] = _LMC(attitudes[i], grad[i], un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun, uobs, d, C, Ftrue, rotFunc, delta)
+         # dDotFunc,, parameterization
+    end
+    return cost
 end
 
-function _LMC(att :: Vec, grad :: Vec, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs,
-    Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec,
-    usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Num where {Num <: Number},
-    Ftrue :: Vec, obsNo :: Int)
+function LMC(attitudes :: Array{T,1} where {T<:Union{quaternion,MRP,GRP,DCM}},
+    un :: MatOrVecs,
+    uu :: MatOrVecs,
+    uv :: MatOrVecs,
+    Area :: MatOrVec,
+    nu :: MatOrVec,
+    nv :: MatOrVec,
+    Rdiff :: MatOrVec,
+    Rspec :: MatOrVec,
+    usun :: Vec,
+    uobs :: MatOrVecs,
+    d :: MatOrVec,
+    C :: Num where {Num <: Number},
+    Ftrue :: Vec,
+    rotFunc :: Function,
+    delta :: Float64)
 
-    Fobs_ , dFobs_ = dFobs(att,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C)
+    cost = Array{Float64,1}(undef,length(attitudes))
+    for i = 1:length(attitudes)
+         cost[i] = _LMC(attitudes[i], un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun, uobs, d, C, Ftrue, rotFunc, delta)
+    end
+    return cost
+end
+
+function _LMC(att :: anyAttitude, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs, Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec, usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Num where {Num <: Number}, Ftrue :: Vec, rotFunc :: Function, delta :: Float64)
+
+    return sum(((_Fobs(att,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,rotFunc) -
+     Ftrue)./(Ftrue .+ delta)).^2)
+end
+
+function _LMC(att :: anyAttitude, grad :: Array{Float64,1}, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs, Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec, usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Num where {Num <: Number}, Ftrue :: Vec, rotFunc :: Function, delta :: Float64)
+
+    # dDotFunc :: Function,, parameterization
+    Fobs_ = _Fobs(att,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,rotFunc)
 
     if length(grad)>0
-        grad[:] = sum( (2*((Fobs_ - Ftrue)./(Ftrue .+ 1e-50))*(dFobs_./(Ftrue .+ 1e-50))) , dims = 1)[:]
+        # Fobs_ , dFobs_ = dFobs(att,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,dDotFunc,rotFunc, parameterization)
+        # grad[:] = sum( ((2*(Fobs_ - Ftrue)./((Ftrue .+ delta).^2)).*(dFobs_)) , dims = 1)[:]
+
+        grad[:] = ForwardDiff.gradient(A -> sum(((_Fobs( A, un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun, uobs, d, C, rotFunc) - Ftrue)./(Ftrue .+ delta)).^2), att)
     end
 
-    return sum(((Fobs_ - Ftrue)./(Ftrue .+ 1e-50)).^2)
+    return sum(((Fobs_ - Ftrue)./(Ftrue .+ delta)).^2)
 end
 
 function LMConstr(attitudes :: Array{Num,2} where {Num <: Number},
     un :: MatOrVecs,
     usun :: Vec,
     uobs :: MatOrVecs,
-    rotFunc :: Function where {Num <: Number},
-    visGroup :: Array{Bool,2},
+    rotFunc :: Function,
+    visGroup :: visibilityGroup,
     obsNo :: Int,
-    facetNo :: Int)
+    facetNo :: Int,
+    constrNo :: Int)
 
     constr = Array{Float64,1}(undef,size(attitudes,2))
 
     for i = 1:size(attitudes)[2]
-        constr[i] = visPenaltyFunction(view(attitudes,:,i),un,usun,uobs,rotFunc,visGroup,obsNo,facetNo)
+        constr[i] = visPenaltyFunction(view(attitudes,:,i),un,usun,uobs,rotFunc,
+            visGroup,obsNo,facetNo,constrNo)
     end
     return constr
 end
 
+function _LMConstr(result :: Vec, att :: Vec, grad :: Mat,
+    un :: MatOrVecs,
+    usun :: Vec,
+    uobs :: MatOrVecs,
+    rotFunc :: Function,
+    visGroup :: visibilityGroup,
+    obsNo :: Int,
+    facetNo :: Int,
+    constrNo :: Int)
+
+    (usunb,uobsb) = _toBodyFrame(att,usun,uobs,rotFunc)
+
+    result[:] = visConstraint(un, usunb, uobsb, visGroup, obsNo, facetNo, constrNo)
+    if length(grad)>0
+        grad[:] = visConstrGrad(att, un, usun, uobs, visGroup, obsNo, facetNo, constrNo)
+    end
+end
+
+function visPenaltyFunc(att :: Vec, un :: MatOrVecs, usun :: Vec, uobs :: MatOrVecs,
+    rotFunc :: Function, visGroup :: visibilityGroup, obsNo :: Int, facetNo :: Int,
+    constrNo :: Int)
+
+    (usunb,uobsb) = _toBodyFrame(att,usun,uobs,rotFunc)
+    constr = max.(visConstraint(un, usunb, uobsb, visGroup, obsNo, facetNo, constrNo),0)
+    return sum(constr.^2)
+end
+
+function visConstraint(un :: Mat, usunb :: Vec, uobsb :: Mat, visGroup :: visibilityGroup,
+     obsNo :: Int, facetNo :: Int, constrNo :: Int)
+
+    constr = zeros(constrNo,)
+    n = 1
+
+    for i = 1:(obsNo+1)*facetNo
+        # @infiltrate
+        ind = [Int(ceil(i/obsNo)),mod(i,facetNo) + 1]
+
+        if !visGroup.isConstraint[ind[1],ind[2]]
+            #do nothing
+        elseif visGroup.isVisible[ind[1],ind[2]]
+            if ind[1] == 1
+                constr[n] = dot(view(un,:,ind[2]),-usunb)
+                global n += 1
+            else
+                constr[n] = dot(view(un,:,ind[2]),-view(uobsb,:,ind[1]-1))
+                global n += 1
+            end
+        else
+            if ind[1] == 1
+                constr[n] = dot(view(un,:,ind[2]),usunb)
+                global n += 1
+            else
+                constr[n] = dot(view(un,:,ind[2]),view(uobsb,:,ind[1]-1))
+                global n += 1
+            end
+        end
+    end
+    return constr
+end
+
+function visConstraint(un :: ArrayOfVecs, usunb :: Vec, uobsb :: ArrayOfVecs,
+    visGroup :: visibilityGroup, obsNo :: Int, facetNo :: Int, constrNo :: Int)
+
+    # ind = [1;1]
+    constr = zeros(constrNo,)
+    global n = 1
+
+    for i = 1:(obsNo+1)*facetNo
+        ind = [Int(ceil(i/obsNo)),mod(i,facetNo) + 1]
+
+        if !visGroup.isConstraint[ind[1],ind[2]]
+            #do nothing
+        elseif visGroup.isVisible[ind[1],ind[2]]
+            if ind[1] == 1
+                constr[n] = dot(un[ind[2]],-usunb)
+                global n += 1
+            else
+                constr[n] = dot(un[ind[2]],-uobsb[ind[1]-1])
+                global n += 1
+            end
+        else
+            if ind[1] == 1
+                constr[n] = dot(un[ind[2]],usunb)
+                global n += 1
+            else
+                constr[n] = dot(un[ind[2]],uobsb[ind[1]-1])
+                global n += 1
+            end
+        end
+
+        # ind[1] += 1
+        # if ind[1] > (obsNo + 1)
+        #     ind[1] = 1
+        #     ind[2] += 1
+        # end
+    end
+    return constr
+end
+
+function visConstrGrad(att :: Vec, un :: ArrayOfVecs, usunb :: Vec, uobsb :: ArrayOfVecs,
+    visGroup :: Array{Bool,2}, obsNo :: Int, facetNo :: Int, constrNo :: Int)
+
+    # ind = [1;1]
+
+    grad = zeros(length(att),constrNo)
+    n = 1
+
+    for i = 1:(obsNo+1)*facetNo
+        ind = [Int(ceil(i/obsNo)),mod(i,facetNo) + 1]
+
+        if !visGroup.isConstraint[ind[1],ind[2]]
+            #do nothing
+        elseif visGroup.isVisible[ind[1],ind[2]]
+            if ind[1] == 1
+                grad[:,n] = -dDotdp(un[ind[2]],usunb,att)
+                global n += 1
+            else
+                grad[:,n] = -dDotdp(un[ind[2]],uobsb[ind[1]-1],att)
+                global n += 1
+            end
+        else
+            if ind[1] == 1
+                grad[:,n] = dDotdp(un[ind[2]],usunb,att)
+                global n += 1
+            else
+                grad[:,n] = dDotdp(un[ind[2]],uobsb[ind[1]-1],att)
+                global n += 1
+            end
+        end
+
+        # ind[1] += 1
+        # if ind[1] > (obsNo + 1)
+        #     ind[1] = 1
+        #     ind[2] += 1
+        # end
+    end
+    return grad
+end
 
 """
   Fraction of visible light that strikes a facet and is reflected to the
@@ -1264,30 +1827,43 @@ end
 """
 function Fobs(att :: anyAttitude, obj :: targetObject, scen :: spaceScenario, a=1, f=1)
 
-    if typeof(att) <: Union{DCM,MRP,GRP,quaternion}
-        (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,typeof(att),a,f)
-    elseif typeof(att) <: Mat
-        (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,DCM)
-    elseif (typeof(att) <: Vec) & (length(att) == 3)
-        (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,GRP,a,f)
-    elseif (typeof(att) <: Vec) & (length(att) == 4)
-        (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,quaternion)
+    # if typeof(att) <: Union{DCM,MRP,GRP,quaternion}
+    #     (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs,typeof(att),a,f)
+    # else #if typeof(att) <: Mat
+    #     (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs)
+    # # elseif (typeof(att) <: Vec) & (length(att) == 3)
+    # #     (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs)
+    # # elseif (typeof(att) <: Vec) & (length(att) == 4)
+    # #     (usun,uobs) = toBodyFrame(att,scen.sunVec,scen.obsVecs)
+    # # else
+    # #     error("Please provide a valid attitude. Attitudes must be represented
+    # #     as a single 3x1 or 4x1 float array, a 3x3 float array, or any of the
+    # #     custom attitude types defined in the attitueFunctions package.")
+    # end
+
+    if (typeof(att) <: Vec) & (length(att) == 3)
+        rotFunc = ((A,v) -> p2A(A,a,f)*v)
+    elseif ((typeof(att) <: Vec) & (length(att) == 4)) | (typeof(att) == quaternion)
+        rotFunc = qRotate
+    elseif (typeof(att) <: Mat) & (size(att) == (3,3))
+        rotFunc = ((A,v) -> A*v)
+    elseif typeof(att) <: Union{DCM,MRP,GRP}
+        rotFunc = ((A,v) -> any2A(A).A*v)
     else
         error("Please provide a valid attitude. Attitudes must be represented
         as a single 3x1 or 4x1 float array, a 3x3 float array, or any of the
         custom attitude types defined in the attitueFunctions package.")
     end
 
-    return _Fobs(obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
-    obj.Rdiff,obj.Rspec,usun,uobs,scen.d,scen.C)
+    return _Fobs(att,obj.nvecs,obj.uvecs,obj.vvecs,obj.Areas,obj.nu,obj.nv,
+    obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,scen.C,rotFunc)
 end
 
-function _Fobs(un :: Mat, uu :: Mat, uv :: Mat, Area :: Mat, nu :: Mat,
-    nv :: Mat, Rdiff :: Mat, Rspec :: Mat, usun :: Vec, uobs :: Mat, d :: Mat,
-    C :: Float64)
+function _Fobs(att :: anyAttitude, un :: Mat, uu :: Mat, uv :: Mat, Area :: Mat, nu :: Mat, nv :: Mat, Rdiff :: Mat, Rspec :: Mat, usunI :: Vec, uobsI :: Mat, d :: Mat, C :: Float64, rotFunc)
 
     # usun = A*usunI
     # uobs = A*uobsI
+    (usun,uobs) = _toBodyFrame(att,usunI,uobsI,rotFunc)
 
     check1 = usun'*un .<= 0
     check2 = uobs'*un .<= 0
@@ -1335,13 +1911,15 @@ function _Fobs(un :: Mat, uu :: Mat, uv :: Mat, Area :: Mat, nu :: Mat,
     return Ftotal[:]
 end
 
-function _Fobs(unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs,
-    Area :: Vec, nu :: Vec, nv :: Vec, Rdiff :: Vec, Rspec :: Vec,
-    usun :: Vec, uobst :: ArrayOfVecs, d :: Vec, C :: Float64)
+function _Fobs(att :: anyAttitude, unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs, Area :: Vec, nu :: Vec, nv :: Vec, Rdiff :: Vec, Rspec :: Vec, usunI :: Vec, uobsI :: ArrayOfVecs, d :: Vec, C :: Float64, rotFunc)
 
+    (usun,uobst) = _toBodyFrame(att,usunI,uobsI,rotFunc)
     # Ftotal = Array{Float64,1}(undef,length(uobsI))
-    Ftotal = zeros(length(uobst),)
-    uh = Array{Float64,1}(undef,3)
+    Ftotal = Array{typeof(usun[1]),1}(undef,length(uobst))
+    for n in eachindex(Ftotal)
+        Ftotal[n] = 0
+    end
+    uh = Array{typeof(usun[1]),1}(undef,3)
 
     for i = 1:length(unm)
         un = unm[i]
@@ -1351,8 +1929,8 @@ function _Fobs(unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs,
         for j = 1:length(uobst)
             uobs = uobst[j]
 
-            check1 = dot(usun,un) < 0
-            check2 = dot(uobs,un) < 0
+            check1 = dot(usun,un) <= 0
+            check2 = dot(uobs,un) <= 0
             visFlag = check1 | check2
 
             if visFlag
@@ -1393,12 +1971,11 @@ function _Fobs(unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs,
                     (1 - Rspec[i])*(1 - dot(uh,usun))^5)/(8*pi)*
                     (dot(uh,un)^((nu[i]*dot(uh,uu)^2 + nv[i]*dot(uh,uv)^2)/(1 - dot(uh,un)^2)))
                 end
+                # pspecnum = 0
                 temp = C/(d[j]^2)*(pspecnum/(usdun + uodun - (usdun)*(uodun)) +
                 pdiff)*(usdun)*Area[i]*(uodun)
-                if temp > 1e-6
-                    @infiltrate
-                end
                 Ftotal[j] += temp
+
             end
 
         end
@@ -1407,6 +1984,58 @@ function _Fobs(unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs,
     # sum(F,dims=2)
 
     return Ftotal
+end
+
+function _Fobs_Analysis(un :: Mat, uu :: Mat, uv :: Mat, Area :: Mat, nu :: Mat, nv :: Mat, Rdiff :: Mat, Rspec :: Mat, usun :: Vec, uobs :: Mat, d :: Mat, C :: Float64)
+
+    # usun = A*usunI
+    # uobs = A*uobsI
+
+    check1 = usun'*un .<= 0
+    check2 = uobs'*un .<= 0
+    visFlag = check1 .| check2
+
+    # calculate the half angle vector
+    uh = transpose((usun .+ uobs)./sqrt.(2 .+ 2*usun'*uobs))
+    # precalculate some dot products to save time
+    usdun = usun'*un
+    uodun = uobs'*un
+
+    # diffuse reflection
+    pdiff = ((28*Rdiff)./(23*pi)).*(1 .- Rspec).*(1 .- (1 .- usdun./2).^5).*
+    (1 .- (1 .- uodun./2).^5)
+
+    # spectral reflection
+
+    # calculate numerator and account for the case where the half angle
+    # vector lines up with the normal vector
+    temp = (uh*un)
+    temp[visFlag] .= 0
+
+    pspecnum = sqrt.((nu .+ 1).*(nv .+ 1)).*(Rspec .+ (1 .- Rspec).*(1 .- uh*usun).^5)./(8*pi).*
+    (temp.^((nu.*(uh*uu).^2 .+ nv.*(uh*uv).^2)./(1 .- temp.^2)))
+
+    if any(isnan.(pspecnum))
+        pspecnum[isnan.(pspecnum)] = sqrt.((nu .+ 1).*(nv .+ 1)).*
+        (Rspec .+ (1 .- Rspec).*(1 .- uh*usun).^5)./(8*pi)[isnan.(pspecnum)]
+    end
+
+    pspec = pspecnum./(usdun .+ uodun .- (usdun).*(uodun))
+
+    # fraction of visibile light for all observer/facet combinations
+    F = C./(d'.^2).*(pspec .+ pdiff).*(usdun).*Area.*(uodun)
+    F[visFlag] .= 0
+
+    # Ftotal = Array{Float64,1}(undef,size(F)[1])
+    Ftotal = zeros(size(F)[1],1)
+    for i = 1:size(F,1)
+        for j = 1:size(F,2)
+            Ftotal[i] += F[i,j]
+        end
+    end
+    # Ftotal = sum(F,dims=2)
+
+    return Ftotal[:], F, pspec, pdiff
 end
 
 """
@@ -1448,27 +2077,30 @@ end
 
   Code -----------------------------------------------------------------
 """
-function dFobs(att :: Vec, unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs,
-    Area :: Vec, nu :: Vec, nv :: Vec, Rdiff :: Vec, Rspec :: Vec, usun :: Vec,
-    uobst :: ArrayOfVecs, d :: Vec, C :: Float64)
-
+function dFobs(att :: Vec, unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayOfVecs, Area :: Vec, nu :: Vec, nv :: Vec, Rdiff :: Vec, Rspec :: Vec, usun :: Vec, uobst :: ArrayOfVecs, d :: Vec, C :: Float64,dDotFunc :: Function, rotFunc :: Function, parameterization)
 
     Ftotal = zeros(length(uobst),)
-    dFtotal = zeros(length(uobst),3)
+    dFtotal = zeros(length(uobst),length(att))
+
+    (unI,uuI,uvI) = _toInertialFrame(att,unm,uum,uvm,rotFunc,parameterization)
+
+
+    # total = zeros(length(uobst),)
+    # dtotal = zeros(length(uobst),3)
 
     uh = Array{Float64,1}(undef,3)
-    A = p2A(att)
+    # A = p2A(att)
 
     for i = 1:length(unm)
-        un = A*unm[i]
-        uv = A*uvm[i]
-        uu = A*uum[i]
+        un = unI[i]
+        uv = uvI[i]
+        uu = uuI[i]
 
         for j = 1:length(uobst)
             uobs = uobst[j]
 
-            check1 = dot(usun,un) < 0
-            check2 = dot(uobs,un) < 0
+            check1 = dot(usun,un) <= 0
+            check2 = dot(uobs,un) <= 0
             visFlag = check1 | check2
 
             if visFlag
@@ -1486,27 +2118,27 @@ function dFobs(att :: Vec, unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayO
                 usuh = dot(usun,uh)
                 # define dot products and their derivatives
                 uhun = dot(uh,un)
-                duhun = dDotdp(uh,un,att)
+                duhun = dDotFunc(uh,unm[i],att)
 
                 uhuu = dot(uh,uu)
-                duhuu = dDotdp(uh,uu,att)
+                duhuu = dDotFunc(uh,uum[i],att)
 
                 uhuv = dot(uh,uv)
-                duhuv = dDotdp(uh,uv,att)
+                duhuv = dDotFunc(uh,uvm[i],att)
 
                 unus = dot(usun,un)
-                dunus = dDotdp(usun,un,att)
+                dunus = dDotFunc(usun,unm[i],att)
 
-                unuo = dot(un,uobs)
-                dunuo = dDotdp(un,uobs,att)
+                unuo = dot(uobs,un)
+                dunuo = dDotFunc(uobs,unm[i],att)
 
 
                 # diffuse reflection
                 k = ((28*Rdiff[i])/(23*pi))*(1 - Rspec[i])
                 pdiff = k*(1 - (1 - unus/2)^5)*(1 - (1 - unuo/2)^5)
 
-                dpdiff = (5/2)*k*((((1-.5*unus)^4)*(1-(1-.5*unuo)^5)*dunus) +
-                (((1-.5*unuo)^4)*(1 - (1 - .5*unus)^5)*dunuo))
+                dpdiff = (5/2)*k*( ( ((1-.5*unus)^4)*(1-(1-.5*unuo)^5)*dunus ) +
+                ( ((1-.5*unuo)^4)*(1 - (1 - .5*unus)^5)*dunuo ) )
 
                 # spectral reflection
 
@@ -1515,18 +2147,21 @@ function dFobs(att :: Vec, unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayO
 
                 K = sqrt((nu[i] + 1)*(nv[i] + 1))/(8*pi)
                 Fref = Rspec[i] + (1-Rspec[i])*(1-usuh)^5
+
+
                 if uhun == 1 #(uhun≈1)
                     num = K*Fref
-                    dnum = 0
+                    dnum = [0;0;0]
                 else
                     fac = (nu[i]*uhuu^2 + nv[i]*uhuv^2)/(1 - uhun^2)
-                    dfac = ((2*nu*uhuu*duhuu + 2*nv*uhuv*duhuv)*(1-uhun^2) +
-                     2*uhun*(nu*uhuu^2 + nv*uhuv^2)*duhun)/(1-uhun^2)^2
+                    dfac = ((2*nu[i]*uhuu*duhuu + 2*nv[i]*uhuv*duhuv)*(1-uhun^2) +
+                     2*uhun*(nu[i]*uhuu^2 + nv[i]*uhuv^2)*duhun)/(1-uhun^2)^2
                     num = K*Fref*uhun^(fac)
-                    dnum = fac*num*duhun/uhun + num*log(uhun)*dfac
+                    dnum = (fac*num/uhun)*duhun + num*log(uhun)*dfac
                 end
 
-                den = (usdun + uodun - (usdun)*(uodun))
+
+                den = (unus + unuo - (unus)*(unuo))
                 dden = (1-unuo)*dunus + (1-unus)*dunuo
 
                 pspec = num/den
@@ -1541,87 +2176,19 @@ function dFobs(att :: Vec, unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :: ArrayO
                 Fobs_ = Fsun/(d[j]^2)*Area[i]*(unuo)
                 dFobs_ = Area[i]/(d[j]^2)*(dFsun*unuo + Fsun*dunuo)
 
-                if temp > 1e-6
-                    @infiltrate
-                end
+                # total[j] += pdiff
+                # dtotal[j,:] += dpdiff
 
                 Ftotal[j] += Fobs_
                 dFtotal[j,:] += dFobs_
+                if uhun == 1
+
+                end
             end
 
         end
     end
-    return Ftotal, dFtotal
-end
-
-function visPenaltyFunc(att :: Vec, un :: MatOrVecs, usun :: Vec, uobs :: MatOrVecs,
-    rotFunc :: Function, visGroup :: Array{Bool,2}, obsNo :: Int, facetNo :: Int)
-
-    constr = max.(visConstraint(att, un, usun, uobs, rotFunc, visGroup, obsNo, facetNo),0)
-    return sum(constr)
-end
-
-function visConstraint(att :: Vec, un :: Mat, usun :: Vec, uobs :: Mat, rotFunc :: Function,
-    visGroup :: Array{Bool,2}, obsNo :: Int, facetNo :: Int)
-
-
-    (usunb,uobsb) = _toBodyFrame(att,usun,uobs,rotFunc)
-    ind = [1;1]
-    constr = zeros((obsNo+1)*facetNo,)
-    for i = 1:(obsNo+1)*facetNo
-        @infiltrate
-        if visGroup[ind[1],ind[2]]
-            if ind[1] == (obsNo + 1)
-                constr[i] = dot(view(un,:,ind[2]),-usunb)
-            else
-                constr[i] = dot(view(un,:,ind[2]),-view(uobsb,:,ind[1]))
-            end
-        else
-            if ind[1] == (obsNo + 1)
-                constr[i] = dot(view(un,:,ind[2]),usunb)
-            else
-                constr[i] = dot(view(un,:,ind[2]),view(uobsb,:,ind[1]))
-            end
-        end
-
-        ind[1] += 1
-        if ind[1] > (obsNo + 1)
-            ind[1] = 1
-            ind[2] += 1
-        end
-    end
-    return constr
-end
-
-function visConstraint(att :: Vec, un :: ArrayOfVecs, usun :: Vec, uobs :: ArrayOfVecs,
-    rotFunc :: Function, visGroup :: Array{Bool,2}, obsNo :: Int, facetNo :: Int)
-
-    (usunb,uobsb) = _toBodyFrame(att,usun,uobs,rotFunc)
-    ind = [1;1]
-    constr = zeros((obsNo+1)*facetNo,)
-
-    for i = 1:(obsNo+1)*facetNo
-        if visGroup[ind[1],ind[2]]
-            if ind[1] == (obsNo + 1)
-                constr[i] = dot(un[ind[2]],-usunb)
-            else
-                constr[i] = dot(un[ind[2]],-uobsb[ind[1]])
-            end
-        else
-            if ind[1] == (obsNo + 1)
-                constr[i] = dot(un[ind[2]],usunb)
-            else
-                constr[i] = dot(un[ind[2]],uobsb[ind[1]])
-            end
-        end
-
-        ind[1] += 1
-        if ind[1] > (obsNo + 1)
-            ind[1] = 1
-            ind[2] += 1
-        end
-    end
-    return constr
+    return Ftotal, dFtotal #, total, dtotal
 end
 
 function checkConvergence(OptResults :: optimizationResults; attitudeThreshold = 5)
@@ -1671,7 +2238,7 @@ function checkConvergence(OptResults :: optimizationResults; attitudeThreshold =
             end
 
             return optConv, optErrAng, clOptConv, clOptErrAng
-        else typeof(trueAttitude) == Array{Float64,1}
+        elseif typeof(trueAttitude) == Array{Float64,1}
             for i = 1:length(results)
                 (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
                  trueAttitude, attitudeThreshold = 5)
@@ -1692,17 +2259,19 @@ function checkConvergence(OptResults :: optimizationResults; attitudeThreshold =
             end
             return optConv, optErrAng, clOptConv, clOptErrAng
         end
-    else typeof(OptResults.results) == PSO_results
+
+    elseif typeof(OptResults.results) == PSO_results
+
         (optConv, optErrAng) =
          _checkConvergence(OptResults.results.xOpt, trueAttitude, attitudeThreshold = 5)
 
-        convTemp = Array{Bool,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-        errAngTemp = Array{Float64,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
+        convTemp = Array{Bool,1}(undef,size(OptResults.results.clusterxOptHist[end],2))
+        errAngTemp = Array{Float64,1}(undef,size(OptResults.results.clusterxOptHist[end],2))
 
-        for j = 1:size(OptResults.results[i].clusterxOptHist[end],2)
+        for j = 1:size(OptResults.results.clusterxOptHist[end],2)
 
             convTemp[j], errAngTemp[j] =
-             _checkConvergence(OptResults.results[i].clusterxOptHist[end][:,j],
+             _checkConvergence(OptResults.results.clusterxOptHist[end][:,j],
              trueAttitude, attitudeThreshold = 5)
         end
 
@@ -1710,11 +2279,31 @@ function checkConvergence(OptResults :: optimizationResults; attitudeThreshold =
         clOptConv = convTemp[minInd]
         clOptErrAng = errAngTemp[minInd]
         return optConv, optErrAng, clOptConv, clOptErrAng
+
+    elseif typeof(OptResults.results) == Array{GB_results,1}
+        optConv = Array{Bool,1}(undef,length(OptResults.results))
+        optErrAng = Array{Float64,1}(undef,length(OptResults.results))
+
+        if typeof(trueAttitude) == Array{Array{Float64,1},1}
+            for i = 1:length(OptResults.results)
+                (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
+                 trueAttitude[i], attitudeThreshold = 5)
+            end
+            return optConv, optErrAng
+        elseif typeof(trueAttitude) == Array{Float64,1}
+            for i = 1:length(results)
+                (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
+                 trueAttitude, attitudeThreshold = 5)
+            end
+            return optConv, optErrAng
+        end
+    elseif typeof(OptResults.results) == GB_results
+
+        return  _checkConvergence(OptResults.results.xOpt, trueAttitude, attitudeThreshold = 5)
     end
 end
 
-function _checkConvergence(AOpt :: Union{quaternion,DCM,MRP,GRP},
-     trueAttitude :: Vec; attitudeThreshold = 5)
+function _checkConvergence(AOpt :: Union{quaternion,DCM,MRP,GRP}, trueAttitude :: Vec; attitudeThreshold = 5)
 
     if typeof(AOpt) == quaternion
         qOpt = AOpt
@@ -1744,74 +2333,6 @@ function _checkConvergence(qOpt :: Vec, trueAttitude :: Vec; attitudeThreshold =
         optConv = optErrAng < attitudeThreshold
         return optConv, optErrAng
     end
-end
-
-function plotSat(obj :: targetObjectFull, scen :: spaceScenario, A :: Mat)
-
-    # if typeof(s) != MSession
-    #
-    # end
-    @mput obj
-    # put_variable(s, :obj, mxarray(obj))
-    @mput scen
-    # put_variable(s, :scen, mxarray(scen))
-    @mput A
-    # put_variables(s, :A, mxarray(A))
-
-
-    eval_string("""
-        addpath("/Users/stephengagnon/matlab/NASA");
-        sat = objectGeometry('facetNo',obj.facetNo,'Area',obj.Areas,'nu',obj.nu,'nv',obj.nv,...
-        'Rdiff',obj.Rdiff,'Rspec',obj.Rspec,'I',obj.J,'vertices',obj.vertices,...
-        'facetVerticesList',obj.vertList,'Attitude',A,'obsNo',scen.obsNo,'obsVecs',scen.obsVecs,...
-        'obsDist',scen.d,'sunVec',scen.sunVec,'C',scen.C);
-
-        sat = sat.plot()
-        """)
-end
-
-function toBodyFrame(att :: anyAttitude, usun :: Vec, uobs :: MatOrVecs, a = 1, f = 1)
-
-    if (typeof(att) <: Vec) & (length(att) == 3)
-        rotFunc = ((A,v) -> p2A(A,a,f)*v)
-    elseif ((typeof(att) <: Vec) & (length(att) == 4)) | (typeof(att) == quaternion)
-        rotFunc = qRotate
-    elseif (typeof(att) <: Mat) & (size(att) == (3,3))
-        rotFunc = ((A,v) -> A*v)
-    elseif typeof(att) <: Union{DCM,MRP,GRP}
-        rotFunc = ((A,v) -> any2A(A).A*v)
-    else
-        error("Please provide a valid attitude. Attitudes must be represented
-        as a single 3x1 or 4x1 float array, a 3x3 float array, or any of the
-        custom attitude types defined in the attitueFunctions package.")
-    end
-    return _toBodyFrame(att,usun,uobs,rotFunc)
-end
-
-function _toBodyFrame(att :: anyAttitude, usun :: Vec, uobs :: ArrayOfVecs, rotFunc :: Function)
-
-    usunb = rotFunc(att,usun)
-
-    uobsb = similar(uobs)
-
-    for i = 1:length(uobs)
-        uobsb[i] = rotFunc(att,uobs[i])
-    end
-
-    return usunb, uobsb
-end
-
-function _toBodyFrame(att :: anyAttitude, usun :: Vec, uobs :: Mat, rotFunc :: Function)
-
-    usunb = rotFunc(att,view(usun,:))
-
-    uobsb = similar(uobs)
-
-    for i = 1:size(uobs,2)
-        uobsb[:,i] = rotFunc(A,view(uobs,:,i))
-    end
-
-    return usunb, uobsb
 end
 
 # in progress
@@ -1860,26 +2381,55 @@ function kmeans(x :: ArrayOfVecs, ncl)
     return kmeans(temp,ncl)
 end
 
-function quaternionDistance(q :: ArrayOfVecs)
-    dist = Array{Float64,2}(undef,length(q),length(q))
-    for i = 1:length(q)
-        for j = i:length(q)
-            dist[i,j] = 1 - abs(q[i]'*q[j])
-            dist[j,i] = dist[i,j]
-        end
-    end
-    return dist
-end
+function visGroupAnalysisFunction(sampleNo,maxIterations,binNo)
 
-function quaternionDistance(q1 :: ArrayOfVecs, q2 :: ArrayOfVecs)
-    dist = Array{Float64,2}(undef,length(q1),length(q2))
-    for i = 1:length(q1)
-        for j = i:length(q2)
-            dist[i,j] = 1 - abs(q[i]'*q[j])
-            dist[j,i] = dist[i,j]
+    (sat, satFull, scen) = simpleScenarioGenerator(vectorized = false)
+    (UvisI,NoI,att)=findAllVisGroupsN(sat,scen,10000)
+    Uselected = UvisI[NoI .== max(NoI...)][1]
+    atts = att[NoI .== max(NoI...)][1]
+    global n = length(atts)
+
+    for i = 1:maxIterations
+
+        a = randomAtt(1,quaternion)
+        visGroup = findVisGroup(sat,scen,a)
+        group = (visGroup.isVisible .& visGroup.isConstraint)
+
+        if [group] == [Uselected]
+            append!(atts,[a])
+            global n += 1
+        end
+
+        if n > sampleNo
+            break
         end
     end
-    return dist
+
+    Fmat = zeros(scen.obsNo,length(atts))
+    for i = 1:length(atts)
+        Fmat[:,i] = Fobs(atts[i],sat,scen)
+    end
+
+    for j = 1:scen.obsNo
+
+        MATLABHistogram(Fmat[j,:],binNo)
+        # display(histogram(Fmat[j,:],nbins=binNo))
+        # fmax = max(Fmat[j,:]...)
+        # fmin = min(Fmat[j,:]...)
+        # fint = (fmax - fmin)/binNo
+        # binVals = collect(range(fmin,stop=fmax,length=binNo+1))
+        # bins = zeros(1,binNo)
+        #
+        # for i = 1:length(atts)
+        #     for k = 1:binNo
+        #         if (Fmat[j,i] > binVals[k]) & (Fmat[j,i] < binVals[k+1])
+        #             bins[k] += 1
+        #             break
+        #         end
+        #     end
+        # end
+        # display(plot(binVals[1:end-1],bins[:]))
+    end
 end
 
 end
