@@ -425,8 +425,15 @@ version = "0.2.5"
 [[Logging]]
 uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
 
+[[MATLAB]]
+deps = ["Libdl", "SparseArrays"]
+git-tree-sha1 = "9edb97bacd74c960b27d6fd230e139689fdc4a7b"
+uuid = "10e44e05-a98a-55b3-a45b-ba969058deb6"
+version = "0.8.2"
+
 [[MATLABfunctions]]
-git-tree-sha1 = "76e933cd55a620be5f76ee350e3737ad87dd5125"
+deps = ["MATLAB"]
+git-tree-sha1 = "f14138ac7d7caa2d43fa72763bc9dfde0b94c993"
 repo-rev = "master"
 repo-url = "/Users/stephengagnon/.julia/dev/MATLABfunctions"
 uuid = "b30ad2df-b50a-4868-b889-ccad604802ef"
@@ -989,14 +996,6 @@ uuid = "8e850ede-7688-5339-a07c-302acd2aaf8d"
 [[p7zip_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
-
-[[visibilityGroups]]
-deps = ["LinearAlgebra", "attitudeFunctions"]
-git-tree-sha1 = "20a9c36acd8e690dafaa9ae5d8a0bcf72b9d3545"
-repo-rev = "master"
-repo-url = "/Users/stephengagnon/.julia/dev/visibilityGroups"
-uuid = "dde82544-3cd7-4f96-a535-ddb3fa36ba29"
-version = "0.1.0"
 
 [[x264_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
