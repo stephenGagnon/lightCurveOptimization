@@ -197,9 +197,10 @@ function simpleScenario(;vectorized = false)
     obsNo = 4
 
     # distance from observer to RSO
-    obsDist = 35000*1000*ones(1,obsNo)
-    # obsDist = 2000*1000*ones(1,obsNo)
-    # body vectors from rso to observer (inertial)
+    # obsDist = 35000*1000*ones(1,obsNo)
+    obsDist = 1*1000*ones(1,obsNo)
+
+    #body vectors from rso to observer (inertial)
     r = sqrt(2)/2
     v = sqrt(3)/3
     obsVecs = [1  r  v  v  r  0 -r  0 -r
@@ -292,6 +293,36 @@ function customScenarioGenerator(;scenParams = nothing, objParams = nothing, vec
     return sat, satFull, scenario
 end
 
+function lightMagFilteringProbGenerator(;x0 = zeros(6), P0 = zeros(6,6), x0true = [0;0;0;1;0;0;0], xf0 = x0true, Q = zeros(7,7), R = nothing, measInt = 1, measOffset = 0, tvec = [1:.1:10...], measTimes = nothing, scenParams = nothing, objParams = nothing, vectorized = false)
+
+    (sat,_,scen) = customScenarioGenerator(scenParams = scenParams, objParams = objParams, vectorized = vectorized)
+
+    dynamicsFunc = (t,x) -> attDyn(t,x,sat.J,inv(sat.J),[0;0;0])
+    measModel = (x) -> _Fobs(view(x,1:4), sat.nvecs, sat.uvecs, sat.vvecs,
+    sat.Areas, sat.nu, sat.nv, sat.Rdiff, sat.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, qRotate)
+
+    if isnothing(R)
+        R = zeros(scen.obsNo,scen.obsNo)
+    elseif (size(R,1) == scen.obsNo & size(R,2) == scen.obsNo)
+        # do nothing
+    elseif (!(size(R,1) == scen.obsNo) | !(size(R,2) == scen.obsNo))
+        error("Measurment Noise matrix must have same dimension as number of observers")
+    else
+        error("Please Provide a valid measurement Noise matrix")
+    end
+
+    if isnothing(measTimes)
+        measTimes = Array{Bool,1}(undef,length(tvec))
+        measTimes .= false
+    elseif length(measTimes) !== length(tvec)
+        error("length of time span and measurement time vector must match")
+    else
+        error("please provide valid measurement times")
+    end
+
+    return attFilteringProblem(x0, P0, x0true, xf0, Q, R, tvec, dynamicsFunc, measModel, scen.obsNo, measInt, measOffset, measTimes)
+end
+
 function Convert_PSO_results(results :: PSO_results, attType, a = 1,f = 1)
 
     if typeof(results.xHist) != Nothing
@@ -361,7 +392,26 @@ function Convert_PSO_results(results :: PSO_results, attType, a = 1,f = 1)
     results.clusterfOptHist, xOpt,results.fOpt)
 end
 
-function checkConvergence(OptResults :: optimizationResults; attitudeThreshold = 5)
+function checkConvergence(OptResults; attitudeThreshold = 5)
+
+    if typeof(OptResults) == optimizationResults
+        return _checkConvergence(OptResults; attitudeThreshold = attitudeThreshold)
+    else
+        optConv =  Array{Bool,1}(undef,length(OptResults))
+        optErrAng = Array{Bool,1}(undef,length(OptResults))
+        clOptConv = Array{Bool,1}(undef,length(OptResults))
+        clOptErrAng = Array{Bool,1}(undef,length(OptResults))
+
+        for i = 1:length(OptResults)
+
+            (optConv[i], optErrAng[i], clOptConv[i], clOptErrAng[i]) = _checkConvergence(OptResults[i]; attitudeThreshold = attitudeThreshold)
+
+        end
+
+    end
+end
+
+function _checkConvergence(OptResults; attitudeThreshold = 5)
 
     if typeof(OptResults.trueAttitude) <: Vec
         if size(OptResults.trueAttitude) == (4,)
@@ -387,56 +437,7 @@ function checkConvergence(OptResults :: optimizationResults; attitudeThreshold =
         error("invalid attitude")
     end
 
-    if typeof(OptResults.results) == Array{PSO_results,1}
-        optConv = Array{Bool,1}(undef,length(OptResults.results))
-        optErrAng = Array{Float64,1}(undef,length(OptResults.results))
-        clOptConv = Array{Bool,1}(undef,length(OptResults.results))
-        clOptErrAng = Array{Float64,1}(undef,length(OptResults.results))
-
-        if typeof(trueAttitude) == Array{Array{Float64,1},1}
-            for i = 1:length(OptResults.results)
-                (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
-                 trueAttitude[i], attitudeThreshold = 5)
-
-                 convTemp = Array{Bool,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-                 errAngTemp = Array{Float64,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-
-                for j = 1:size(OptResults.results[i].clusterxOptHist[end],2)
-
-                    convTemp[j], errAngTemp[j] =
-                     _checkConvergence(OptResults.results[i].clusterxOptHist[end][:,j],
-                     trueAttitude[i], attitudeThreshold = 5)
-                end
-
-                minInd = argmin(errAngTemp)
-                clOptConv[i] = convTemp[minInd]
-                clOptErrAng[i] = errAngTemp[minInd]
-            end
-
-            return optConv, optErrAng, clOptConv, clOptErrAng
-        elseif typeof(trueAttitude) == Array{Float64,1}
-            for i = 1:length(OptResults.results)
-                (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
-                 trueAttitude, attitudeThreshold = 5)
-
-                convTemp = Array{Bool,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-                errAngTemp = Array{Float64,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-
-                for j = 1:size(OptResults.results[i].clusterxOptHist[end],2)
-
-                    convTemp[j], errAngTemp[j] =
-                     _checkConvergence(OptResults.results[i].clusterxOptHist[end][:,j],
-                     trueAttitude, attitudeThreshold = 5)
-                end
-
-                minInd = argmin(errAngTemp)
-                clOptConv[i] = convTemp[minInd]
-                clOptErrAng[i] = errAngTemp[minInd]
-            end
-            return optConv, optErrAng, clOptConv, clOptErrAng
-        end
-
-    elseif typeof(OptResults.results) == PSO_results
+    if typeof(OptResults.results) == PSO_results
 
         (optConv, optErrAng) =
          _checkConvergence(OptResults.results.xOpt, trueAttitude, attitudeThreshold = 5)
@@ -455,25 +456,7 @@ function checkConvergence(OptResults :: optimizationResults; attitudeThreshold =
         clOptConv = convTemp[minInd]
         clOptErrAng = errAngTemp[minInd]
         return optConv, optErrAng, clOptConv, clOptErrAng
-    elseif typeof(OptResults.results) == Array{GB_results,1}
-        optConv = Array{Bool,1}(undef,length(OptResults.results))
-        optErrAng = Array{Float64,1}(undef,length(OptResults.results))
-
-        if typeof(trueAttitude) == Array{Array{Float64,1},1}
-            for i = 1:length(OptResults.results)
-                (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
-                 trueAttitude[i], attitudeThreshold = 5)
-            end
-            return optConv, optErrAng
-        elseif typeof(trueAttitude) == Array{Float64,1}
-            for i = 1:length(results)
-                (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
-                 trueAttitude, attitudeThreshold = 5)
-            end
-            return optConv, optErrAng
-        end
     elseif typeof(OptResults.results) == GB_results
-
         return  _checkConvergence(OptResults.results.xOpt, trueAttitude, attitudeThreshold = 5)
     end
 end
@@ -639,3 +622,68 @@ macro tryinfiltrate(expr)
         error()
     end
 end
+# if typeof(OptResults) == Array{PSO_results,1}
+#     optConv = Array{Bool,1}(undef,length(OptResults.results))
+#     optErrAng = Array{Float64,1}(undef,length(OptResults.results))
+#     clOptConv = Array{Bool,1}(undef,length(OptResults.results))
+#     clOptErrAng = Array{Float64,1}(undef,length(OptResults.results))
+#
+#     if typeof(trueAttitude) == Array{Array{Float64,1},1}
+#         for i = 1:length(OptResults.results)
+#             (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
+#              trueAttitude[i], attitudeThreshold = 5)
+#
+#              convTemp = Array{Bool,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
+#              errAngTemp = Array{Float64,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
+#
+#             for j = 1:size(OptResults.results[i].clusterxOptHist[end],2)
+#
+#                 convTemp[j], errAngTemp[j] =
+#                  _checkConvergence(OptResults.results[i].clusterxOptHist[end][:,j],
+#                  trueAttitude[i], attitudeThreshold = 5)
+#             end
+#
+#             minInd = argmin(errAngTemp)
+#             clOptConv[i] = convTemp[minInd]
+#             clOptErrAng[i] = errAngTemp[minInd]
+#         end
+#
+#         return optConv, optErrAng, clOptConv, clOptErrAng
+#     elseif typeof(trueAttitude) == Array{Float64,1}
+#         for i = 1:length(OptResults.results)
+#             (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
+#              trueAttitude, attitudeThreshold = 5)
+#
+#             convTemp = Array{Bool,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
+#             errAngTemp = Array{Float64,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
+#
+#             for j = 1:size(OptResults.results[i].clusterxOptHist[end],2)
+#
+#                 convTemp[j], errAngTemp[j] =
+#                  _checkConvergence(OptResults.results[i].clusterxOptHist[end][:,j],
+#                  trueAttitude, attitudeThreshold = 5)
+#             end
+#
+#             minInd = argmin(errAngTemp)
+#             clOptConv[i] = convTemp[minInd]
+#             clOptErrAng[i] = errAngTemp[minInd]
+#         end
+#         return optConv, optErrAng, clOptConv, clOptErrAng
+#     end
+# elseif typeof(OptResults.results) == Array{GB_results,1}
+#     optConv = Array{Bool,1}(undef,length(OptResults.results))
+#     optErrAng = Array{Float64,1}(undef,length(OptResults.results))
+#
+#     if typeof(trueAttitude) == Array{Array{Float64,1},1}
+#         for i = 1:length(OptResults.results)
+#             (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
+#              trueAttitude[i], attitudeThreshold = 5)
+#         end
+#         return optConv, optErrAng
+#     elseif typeof(trueAttitude) == Array{Float64,1}
+#         for i = 1:length(results)
+#             (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
+#              trueAttitude, attitudeThreshold = 5)
+#         end
+#         return optConv, optErrAng
+#     end
