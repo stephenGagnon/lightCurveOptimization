@@ -30,7 +30,6 @@ function costFuncGenPSO(obj :: targetObject, scen :: spaceScenario, trueAttitude
             return (att,grad) -> LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs,obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, options.delta)
 
         end
-
     else
         return ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,
         obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs, scen.d,scen.C,Ftrue,rotFunc,options.delta)) :: Function

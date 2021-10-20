@@ -13,6 +13,7 @@ using Statistics
 using MATLABfunctions
 using ForwardDiff
 using BenchmarkTools
+using myFilters
 
 import Distances: evaluate
 
@@ -25,7 +26,7 @@ include("constraintFunctions.jl")
 include("lightCurveModel.jl")
 include("visibilityGroups.jl")
 
-export costFuncGenPSO,costFuncGenNLopt, PSO_cluster, MPSO_cluster, simpleScenarioGenerator, Fobs, optimizationOptions, optimizationResults, targetObject, targetObjectFull, spaceScenario, PSO_parameters, GB_parameters, PSO_results, Convert_PSO_results, plotSat, simpleSatellite, simpleScenario, checkConvergence, LMC, _LMC, dFobs, Fobs, _MPSO_cluster,visPenaltyFunc, visConstraint, constraintGen, GB_results, MRPScatterPlot, visGroupAnalysisFunction, _Fobs_Analysis, MPSO_AVC, _MPSO_AVC, _PSO_cluster, customScenarioGenerator, customSatellite, customScenario, tryinfiltrate, findVisGroup, _findVisGroup, findAllVisGroups, findAllVisGroupsN, visibilityGroup, sunVisGroupClustering, sunVisGroup, visGroupClustering, findSunVisGroup
+export costFuncGenPSO,costFuncGenNLopt, PSO_cluster, MPSO_cluster, simpleScenarioGenerator, Fobs, optimizationOptions, optimizationResults, targetObject, targetObjectFull, spaceScenario, PSO_parameters, GB_parameters, PSO_results, Convert_PSO_results, plotSat, simpleSatellite, simpleScenario, checkConvergence, LMC, _LMC, dFobs, Fobs, _MPSO_cluster,visPenaltyFunc, visConstraint, constraintGen, GB_results, MRPScatterPlot, visGroupAnalysisFunction, _Fobs_Analysis, MPSO_AVC, _MPSO_AVC, _PSO_cluster, customScenarioGenerator, customSatellite, customScenario, tryinfiltrate, findVisGroup, _findVisGroup, findAllVisGroups, findAllVisGroupsN, visibilityGroup, sunVisGroupClustering, sunVisGroup, visGroupClustering, findSunVisGroup, lightMagFilteringProbGenerator
 
 
 function PSO_cluster(x :: Union{Mat,ArrayOfVecs,Array{MRP,1},Array{GRP,1}}, costFunc :: Function, opt :: PSO_parameters)
@@ -118,7 +119,7 @@ function _PSO_cluster(x :: Mat, costFunc :: Function, opt :: PSO_parameters)
 
     optInd = argmin(fopt)
     xOptHist[1] = xopt[:,optInd]
-    fOptHist[1] = fopt[optInd]
+    fOptHist[1] = deepcopy(fopt[optInd])
 
     if opt.saveFullHist
         # initalize particle and objective histories
@@ -133,12 +134,12 @@ function _PSO_cluster(x :: Mat, costFunc :: Function, opt :: PSO_parameters)
     clfOptHist = Array{typeof(finit),1}(undef,opt.tmax)
 
     if opt.saveFullHist
-        xHist[1] = x
-        fHist[1] = finit
+        xHist[1] = deepcopy(x)
+        fHist[1] = deepcopy(finit)
     end
 
-    clxOptHist[1] = xopt
-    clfOptHist[1] = fopt
+    clxOptHist[1] = deepcopy(xopt)
+    clfOptHist[1] = deepcopy(fopt)
 
     # inital particle velocity is zero
     v = zeros(size(x));
@@ -797,7 +798,7 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
     finit = costFunc(x,grad)
     gn = norm.(grad)
     gn_mean = zeros(opt.Ncl)
-    scale = range(1-.7,stop = 1, length = opt.Ncl)
+    scale = range(1-.8,stop = 1.2, length = opt.Ncl)
     w_scale = similar(scale)
 
     # initialize the local best for each particle as its inital value
@@ -826,6 +827,7 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
 
 
     cl = 1:opt.Ncl
+    Ncl = length(cl)
 
     # intialize best local optima in each cluster
     xopt = Array{typeof(x[1]),1}(undef,opt.Ncl)
@@ -863,7 +865,7 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
             Pgx[j] = deepcopy(xopt[ind[j]])
         else
             # follow a random cluster best
-            Pgx[j] = deepcopy(xopt[cl[cl.!=ind[j]][rand([1,opt.Ncl-1])]])
+            Pgx[j] = xopt[1:Ncl][1:Ncl .!= ind[j]][rand(1:Ncl-1)]
         end
     end
 
@@ -987,7 +989,8 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
                 Pgx[k] = deepcopy(xopt[ind[k]])
             else
                 # follow a random cluster best
-                Pgx[k] = deepcopy(xopt[cl[cl.!=ind[k]][rand([1,opt.Ncl-1])]])
+
+                Pgx[k] = xopt[1:Ncl][1:Ncl .!= ind[k]][rand(1:Ncl-1)]
             end
         end
 
