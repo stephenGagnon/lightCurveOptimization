@@ -78,14 +78,14 @@ end
     maxtime :: Num = 5
 end
 
-struct PSO_results
-    xHist :: Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1},Nothing}
-    fHist :: Union{ArrayOfVecs,Nothing}
-    xOptHist :: Union{ArrayOfVecs, Array{MRP,1}, Array{GRP,1}, Array{quaternion,1}, Array{DCM,1}}
+struct PSO_results{T}
+    xHist :: Union{Array{Array{T,1},1}, Array{Array{Float64,2},1}}#Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1},Nothing}
+    fHist :: ArrayOfVecs
+    xOptHist :: Array{T,1}
     fOptHist :: Vec
-    clusterxOptHist :: Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1}}
+    clusterxOptHist :: Union{Array{Array{T,1},1}, Array{Array{Float64,2},1}}
     clusterfOptHist :: Array{Vec,1}
-    xOpt :: Union{Vec,MRP,GRP,quaternion,DCM}
+    xOpt :: T
     fOpt :: Float64
 end
 
@@ -98,26 +98,26 @@ end
 struct optimizationOptions
     # set whether the optimizer represents attitudes as 1D arrays of custom types
     # or as 2D arrays where columns correspond to attitudes
-    vectorizeOptimization
+    vectorizeOptimization :: Bool
     # determines whether cost function is vectorized or evaluated in loops
-    vectorizeCost
+    vectorizeCost :: Bool
     # set the attitude parameterization that defines the search space of the
     #optimization
-    Parameterization
+    Parameterization :: Type
     # choose whether the multiplicative PSO is used
-    algorithm
+    algorithm :: Symbol
     # choose method for particle initialization
-    initMethod
+    initMethod :: String
     # determines if full particle history at each interation is saved in particle based optimization
-    saveFullHist
+    saveFullHist :: Bool
     # cost function parameter
-    delta
+    delta :: Float64
     # boolean to determine if noise should be considered
-    noise
+    noise :: Bool
     # mean value of noise
-    mean
+    mean :: Float64
     # standard deviation of noise
-    std
+    std :: Float64
 end
 
 function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = false, Parameterization = quaternion, algorithm = :MPSO_cluster, initMethod = "random", saveFullHist = false,delta = 1e-50,noise = false, mean = 0, std = 1e-15)
@@ -128,12 +128,12 @@ end
 
 struct optimizationResults
 
-    results #:: Union{PSO_results,Array{PSO_results,1}}
+    results :: Union{PSO_results, GB_results}
     object :: targetObject
     objectFullData :: targetObjectFull
     scenario :: spaceScenario
-    PSO_params :: Union{PSO_parameters,GB_parameters}
-    trueAttitude
+    PSO_params :: Union{PSO_parameters, GB_parameters}
+    trueAttitude :: anyAttitude
     options :: optimizationOptions
 end
 

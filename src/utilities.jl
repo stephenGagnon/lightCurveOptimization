@@ -263,6 +263,12 @@ function customScenario(scenParams; vectorized = false)
         end
     end
 
+    if typeof(scenvars[5]) == Vector{Vector{Float64}}
+        scenvars[1] = length(scenvars[5])
+    elseif typeof(scenvars[5]) == Matrix{Float64}
+        scenvars[1] = size(scenvars[5],2)
+    end
+
     scenario = spaceScenario(scenvars...)
 
     return scenario
@@ -396,18 +402,17 @@ function checkConvergence(OptResults; attitudeThreshold = 5)
 
     if typeof(OptResults) == optimizationResults
         return _checkConvergence(OptResults; attitudeThreshold = attitudeThreshold)
-    else
+    elseif typeof(OptResults) == Array{optimizationResults,1}
         optConv =  Array{Bool,1}(undef,length(OptResults))
-        optErrAng = Array{Bool,1}(undef,length(OptResults))
+        optErrAng = Array{Float64,1}(undef,length(OptResults))
         clOptConv = Array{Bool,1}(undef,length(OptResults))
-        clOptErrAng = Array{Bool,1}(undef,length(OptResults))
+        clOptErrAng = Array{Float64,1}(undef,length(OptResults))
 
         for i = 1:length(OptResults)
-
             (optConv[i], optErrAng[i], clOptConv[i], clOptErrAng[i]) = _checkConvergence(OptResults[i]; attitudeThreshold = attitudeThreshold)
 
         end
-
+        return optConv, optErrAng, clOptConv, clOptErrAng
     end
 end
 
@@ -428,22 +433,22 @@ function _checkConvergence(OptResults; attitudeThreshold = 5)
     elseif typeof(OptResults.trueAttitude) == Array{Array{Float64,2},1}
         trueAttitude = [A2q(A) for A in OptResults.trueAttitude]
     elseif typeof(OptResults.trueAttitude) == Array{Array{Float64,1},1}
-        if size(OptResults.trueAttitude) == (4,)
+        if size(OptResults.trueAttitude[1]) == (4,)
             trueAttitude = OptResults.trueAttitude
-        elseif size(OptResults.trueAttitude) == (3,)
+        elseif size(OptResults.trueAttitude[1]) == (3,)
             trueAttitude = p2q(OptResults.trueAttitude)
         end
     else
         error("invalid attitude")
     end
 
-    if typeof(OptResults.results) == PSO_results
+    if typeof(OptResults.results) <: PSO_results
 
         (optConv, optErrAng) =
          _checkConvergence(OptResults.results.xOpt, trueAttitude, attitudeThreshold = 5)
 
-        convTemp = Array{Bool,1}(undef,size(OptResults.results.clusterxOptHist[end],2))
-        errAngTemp = Array{Float64,1}(undef,size(OptResults.results.clusterxOptHist[end],2))
+        convTemp = Array{Bool,1}(undef, size(OptResults.results.clusterxOptHist[end],2))
+        errAngTemp = Array{Float64,1}(undef, size(OptResults.results.clusterxOptHist[end],2))
 
         for j = 1:size(OptResults.results.clusterxOptHist[end],2)
 
@@ -456,8 +461,10 @@ function _checkConvergence(OptResults; attitudeThreshold = 5)
         clOptConv = convTemp[minInd]
         clOptErrAng = errAngTemp[minInd]
         return optConv, optErrAng, clOptConv, clOptErrAng
-    elseif typeof(OptResults.results) == GB_results
+
+    elseif typeof(OptResults.results) <: GB_results
         return  _checkConvergence(OptResults.results.xOpt, trueAttitude, attitudeThreshold = 5)
+    else
     end
 end
 
@@ -614,14 +621,14 @@ function isassigned(x1 :: Array{Array{Float64,1},1}, x2 :: Colon)
     return out
 end
 
-macro tryinfiltrate(expr)
-    try
-        expr
-    catch
-        @infiltrate
-        error()
-    end
-end
+# macro tryinfiltrate(expr)
+#     try
+#         expr
+#     catch
+#         @infiltrate
+#         error()
+#     end
+# end
 # if typeof(OptResults) == Array{PSO_results,1}
 #     optConv = Array{Bool,1}(undef,length(OptResults.results))
 #     optErrAng = Array{Float64,1}(undef,length(OptResults.results))
