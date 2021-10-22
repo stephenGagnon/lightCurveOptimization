@@ -8,11 +8,11 @@ using attitudeFunctions
 using Plots
 using Munkres
 using NLopt
-using Infiltrator
+# using Infiltrator
 using Statistics
 using MATLABfunctions
 using ForwardDiff
-using BenchmarkTools
+# using BenchmarkTools
 using myFilters
 
 import Distances: evaluate
@@ -60,7 +60,8 @@ function PSO_cluster(x :: Union{Mat,ArrayOfVecs,Array{MRP,1},Array{GRP,1}}, cost
         clxOptHistOut = clxOptHist
     end
 
-    return PSO_results(xHistOut,fHist,xOptHist,fOptHist,clxOptHistOut,clfOptHist,xOpt,fOpt)
+
+    return PSO_results{typeof(xOpt)}(xHistOut, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt)
 end
 
 function _PSO_cluster(x :: Mat, costFunc :: Function, opt :: PSO_parameters)
@@ -126,8 +127,8 @@ function _PSO_cluster(x :: Mat, costFunc :: Function, opt :: PSO_parameters)
         xHist = Array{typeof(x),1}(undef,opt.tmax)
         fHist = Array{typeof(finit),1}(undef,opt.tmax)
     else
-        xHist = nothing
-        fHist = nothing
+        xHist = Array{typeof(x),1}(undef,0)
+        fHist = Array{typeof(finit),1}(undef,0)
     end
 
     clxOptHist = Array{typeof(x),1}(undef,opt.tmax)
@@ -315,8 +316,8 @@ function _PSO_cluster(x :: ArrayOfVecs, costFunc :: Function, opt :: PSO_paramet
         xHist = Array{typeof(x),1}(undef,opt.tmax)
         fHist = Array{typeof(finit),1}(undef,opt.tmax)
     else
-        xHist = nothing
-        fHist = nothing
+        xHist = Array{typeof(x),1}(undef,0)
+        fHist = Array{typeof(finit),1}(undef,0)
     end
 
     clxOptHist = Array{typeof(x),1}(undef,opt.tmax)
@@ -450,28 +451,16 @@ function MPSO_cluster(x :: Union{Array{quaternion,1}, ArrayOfVecs}, costFunc :: 
         temp = x
     end
 
-    out_vars = _MPSO_cluster(temp,costFunc,clusterFunc,opt)
+    xHist, fHist, xOptHist, fOptHist, clxOptHist, clfOptHist, xOpt, fOpt = _MPSO_cluster(temp, costFunc, clusterFunc,opt)
 
-    if length(out_vars) == 8
-        (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt) = out_vars[3:8]
-    else
-        (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt) = out_vars[1:6]
-    end
-    # out_vars is a tuple (xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt)
-    # it can also be a tuple (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt)
 
-    if length(out_vars) == 8 & (typeof(out_vars[1]) == Array{Array{Array{Float64,1},1},1})
-        xHist = Array{Array{Float64,2},1}(undef,length(out_vars[1]))
-        for i = 1:length(out_vars[1])
-            xHist[i] = hcat(out_vars[1][i]...)
+    if typeof(xHist) == Array{Array{Array{Float64,1},1},1}
+        xHistOut = Array{Array{Float64,2},1}(undef,length(xHist))
+        for i = 1:length(xHist)
+            xHistOut[i] = hcat(xHist[i]...)
         end
-        fHist = out_vars[2]
-    elseif length(out_vars) == 8
-        xHist = out_vars[1]
-        fHist = out_vars[2]
     else
-        xHist = nothing
-        fHist = nothing
+        xHistOut = xHist
     end
 
     if typeof(clxOptHist) == Array{Array{Array{Float64,1},1},1}
@@ -487,7 +476,7 @@ function MPSO_cluster(x :: Union{Array{quaternion,1}, ArrayOfVecs}, costFunc :: 
         clxOptHistOut = clxOptHist
     end
 
-    return PSO_results(xHist, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt) :: PSO_results
+    return PSO_results{typeof(xOpt)}(xHist, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt) :: PSO_results
 end
 
 function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Function, opt :: PSO_parameters)
@@ -563,7 +552,7 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Fu
             try
                 Pgx[j] = xopt[1:Ncl][ xopt[1:Ncl] .!== [xopt[clmap[j]]]][rand(1:Ncl-1)]
             catch
-                @infiltrate
+                # @infiltrate
                 error()
             end
         end
@@ -583,6 +572,9 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Fu
         fHist = Array{typeof(finit),1}(undef,opt.tmax)
         xHist[1] = deepcopy(x)
         fHist[1] = finit
+    else
+        xHist = Array{typeof(x),1}(undef,0)
+        fHist = Array{typeof(finit),1}(undef,0)
     end
 
     clxOptHist = Array{typeof(x),1}(undef,opt.tmax)
@@ -715,19 +707,14 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Fu
                 if opt.saveFullHist
                     return xHist[1:i] :: VecOfArrayOfVecs, fHist[1:i] :: ArrayOfVecs, xOptHist[1:i] :: ArrayOfVecs, fOptHist[1:i] :: Vector, clxOptHist[1:i] :: VecOfArrayOfVecs, clfOptHist[1:i] :: ArrayOfVecs, xOptHist[i] :: Vector, fOptHist[i] :: Float64
                 else
-                    return xOptHist[1:i] :: ArrayOfVecs, fOptHist[1:i] :: Vector, clxOptHist[1:i] :: VecOfArrayOfVecs, clfOptHist[1:i] :: ArrayOfVecs, xOptHist[i] :: Vector, fOptHist[i] :: Float64
+                    return xHist, fHist, xOptHist[1:i] :: ArrayOfVecs, fOptHist[1:i] :: Vector, clxOptHist[1:i] :: VecOfArrayOfVecs, clfOptHist[1:i] :: ArrayOfVecs, xOptHist[i] :: Vector, fOptHist[i] :: Float64
                 end
             end
         end
 
     end
 
-
-    if opt.saveFullHist
-        return xHist :: VecOfArrayOfVecs,fHist :: ArrayOfVecs, xOptHist :: ArrayOfVecs, fOptHist :: Vector, clxOptHist :: VecOfArrayOfVecs, clfOptHist :: ArrayOfVecs, xOptHist[end] :: Vector, fOptHist[end] :: Float64
-    else
-        return xOptHist :: ArrayOfVecs, fOptHist :: Vector, clxOptHist :: VecOfArrayOfVecs, clfOptHist :: ArrayOfVecs, xOptHist[end] :: Vector, fOptHist[end] :: Float64
-    end
+    return xHist :: VecOfArrayOfVecs,fHist :: ArrayOfVecs, xOptHist :: ArrayOfVecs, fOptHist :: Vector, clxOptHist :: VecOfArrayOfVecs, clfOptHist :: ArrayOfVecs, xOptHist[end] :: Vector, fOptHist[end] :: Float64
 end
 
 function MPSO_AVC(x :: Union{Array{quaternion,1}, ArrayOfVecs}, costFunc :: Function, clusterFunc :: Function, opt :: PSO_parameters)
@@ -744,40 +731,32 @@ function MPSO_AVC(x :: Union{Array{quaternion,1}, ArrayOfVecs}, costFunc :: Func
         temp = x
     end
 
-    out_vars = _MPSO_AVC(temp,costFunc,clusterFunc,opt)
+    xHist, fHist, xOptHist, fOptHist, clxOptHist, clfOptHist, xOpt, fOpt = _MPSO_AVC(temp,costFunc,clusterFunc,opt)
 
-    if length(out_vars) == 8
-        (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt) = out_vars[3:8]
-    else
-        (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt) = out_vars[1:6]
-    end
-    # out_vars is a tuple (xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt)
-    # it can also be a tuple (xOptHist,fOptHist,clxOptHist,clfOptHist,xOpt,fOpt)
 
-    if length(out_vars) == 8 & (typeof(out_vars[1]) == Array{Array{Array{Float64,1},1},1})
-        xHist = Array{Array{Float64,2},1}(undef,length(out_vars[1]))
-        for i = 1:length(out_vars[1])
-            xHist[i] = hcat(out_vars[1][i]...)
+    if typeof(xHist) == Array{Array{Array{Float64,1},1},1}
+        xHistOut = Array{Array{Float64,2},1}(undef,length(xHist))
+        for i = 1:length(xHist)
+            xHistOut[i] = hcat(xHist[i]...)
         end
-        fHist = out_vars[2]
-    elseif length(out_vars) == 8
-        xHist = out_vars[1]
-        fHist = out_vars[2]
     else
-        xHist = nothing
-        fHist = nothing
+        xHistOut = xHist
     end
 
     if typeof(clxOptHist) == Array{Array{Array{Float64,1},1},1}
         clxOptHistOut = Array{Array{Float64,2},1}(undef,length(clxOptHist))
         for i = 1:length(clxOptHist)
-            clxOptHistOut[i] = hcat(clxOptHist[i]...)
+            temp = Array{Float64,2}(undef, length(clxOptHist[i][1]), length(clxOptHist[i]))
+            for j = 1:length(clxOptHist[i])
+                temp[:,j] = clxOptHist[i][j]
+            end
+            clxOptHistOut[i] = temp
         end
     else
         clxOptHistOut = clxOptHist
     end
 
-    return PSO_results(xHist, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt)
+    return PSO_results{typeof(xOpt)}(xHist, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt) :: PSO_results
 end
 
 function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Function, opt :: PSO_parameters)
@@ -884,6 +863,9 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
         fHist = Array{typeof(finit),1}(undef,opt.tmax)
         xHist[1] = deepcopy(x)
         fHist[1] = finit
+    else
+        xHist = Array{typeof(x),1}(undef,0)
+        fHist = Array{typeof(finit),1}(undef,0)
     end
 
     clxOptHist = Array{typeof(x),1}(undef,opt.tmax)
@@ -1011,7 +993,7 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
                     return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
                     clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
                 else
-                    return xOptHist[1:i],fOptHist[1:i], clxOptHist[1:i],clfOptHist[1:i],
+                    return xHist, fHist, xOptHist[1:i],fOptHist[1:i], clxOptHist[1:i],clfOptHist[1:i],
                     xOptHist[i],fOptHist[i]
                 end
             end
@@ -1019,11 +1001,9 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
 
     end
 
-    if opt.saveFullHist
-        return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
-    else
-        return xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
-    end
+
+    return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+
 end
 
 end
