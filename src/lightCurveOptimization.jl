@@ -5,15 +5,16 @@ using Random
 using Distributions
 using Distances
 using attitudeFunctions
-using Plots
+# using Plots
 using Munkres
 using NLopt
-# using Infiltrator
+using Infiltrator
 using Statistics
 using MATLABfunctions
 using ForwardDiff
 # using BenchmarkTools
 using myFilters
+using PyPlot
 
 import Distances: evaluate
 
@@ -26,7 +27,7 @@ include("constraintFunctions.jl")
 include("lightCurveModel.jl")
 include("visibilityGroups.jl")
 
-export costFuncGenPSO,costFuncGenNLopt, PSO_cluster, MPSO_cluster, simpleScenarioGenerator, Fobs, optimizationOptions, optimizationResults, targetObject, targetObjectFull, spaceScenario, PSO_parameters, GB_parameters, PSO_results, Convert_PSO_results, plotSat, simpleSatellite, simpleScenario, checkConvergence, LMC, _LMC, dFobs, Fobs, _MPSO_cluster,visPenaltyFunc, visConstraint, constraintGen, GB_results, MRPScatterPlot, visGroupAnalysisFunction, _Fobs_Analysis, MPSO_AVC, _MPSO_AVC, _PSO_cluster, customScenarioGenerator, customSatellite, customScenario, tryinfiltrate, findVisGroup, _findVisGroup, findAllVisGroups, findAllVisGroupsN, visibilityGroup, sunVisGroupClustering, sunVisGroup, visGroupClustering, findSunVisGroup, lightMagFilteringProbGenerator
+export costFuncGenPSO,costFuncGenNLopt, PSO_cluster, MPSO_cluster, simpleScenarioGenerator, Fobs, optimizationOptions, optimizationResults, targetObject, targetObjectFull, spaceScenario, PSO_parameters, GB_parameters, PSO_results, Convert_PSO_results, plotSat, simpleSatellite, simpleScenario, checkConvergence, LMC, _LMC, dFobs, Fobs, _MPSO_cluster,visPenaltyFunc, visConstraint, constraintGen, GB_results, MRPScatterPlot, visGroupAnalysisFunction, _Fobs_Analysis, MPSO_AVC, _MPSO_AVC, _PSO_cluster, customScenarioGenerator, customSatellite, customScenario, tryinfiltrate, findVisGroup, _findVisGroup, findAllVisGroups, findAllVisGroupsN, visibilityGroup, sunVisGroupClustering, sunVisGroup, visGroupClustering, findSunVisGroup, lightMagFilteringProbGenerator, attLMFIM, normVecClustering, AttFilteringProbGenerator
 
 
 function PSO_cluster(x :: Union{Mat,ArrayOfVecs,Array{MRP,1},Array{GRP,1}}, costFunc :: Function, opt :: PSO_parameters)
@@ -552,7 +553,7 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Fu
             try
                 Pgx[j] = xopt[1:Ncl][ xopt[1:Ncl] .!== [xopt[clmap[j]]]][rand(1:Ncl-1)]
             catch
-                # @infiltrate
+                @infiltrate
                 error()
             end
         end
@@ -1003,7 +1004,6 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
 
 
     return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
-
 end
 
 end

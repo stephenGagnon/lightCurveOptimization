@@ -178,7 +178,7 @@ function _Fobs(att :: anyAttitude, unm :: ArrayOfVecs, uum :: ArrayOfVecs, uvm :
                     (1 - Rspec[i])*(1 - dot(uh,usun))^5)/(8*pi)*
                     (dot(uh,un)^((nu[i]*dot(uh,uu)^2 + nv[i]*dot(uh,uv)^2)/(1 - dot(uh,un)^2)))
                 end
-                # pspecnum = 0 
+                # pspecnum = 0
                 Ftotal[j] += C/(d[j]^2)*(pspecnum/(usdun + uodun - (usdun)*(uodun)) +
                 pdiff)*(usdun)*Area[i]*(uodun)
 

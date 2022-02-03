@@ -47,19 +47,17 @@ function costFuncGenNLopt(obj :: targetObject, scen :: spaceScenario, trueAttitu
 
     if (options.Parameterization == MRP) | (options.Parameterization == GRP)
         rotFunc = ((A,v) -> p2A(A,a,f)*v) :: Function
-        dDotFunc = ((v1,v2,att) -> -dDotdp(v1,v2,-att))
+        # dDotFunc = ((v1,v2,att) -> -dDotdp(v1,v2,-att))
     elseif options.Parameterization == quaternion
         rotFunc = qRotate :: Function
-        dDotFunc = ((v1,v2,att) -> qinv(dDotdq(v1,v2,qinv(att))))
+        # dDotFunc = ((v1,v2,att) -> qinv(dDotdq(v1,v2,qinv(att))))
     else
         error("Please provide a valid attitude representation type. Options are:
         'MRP' (modified Rodrigues parameters), 'GRP' (generalized Rodrigues parameters),
         or 'quaternion' ")
     end
 
-    return ((att,grad) -> _LMC(att,grad,obj.nvecs,obj.uvecs,obj.vvecs,
-    obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs,scen.d,
-    scen.C,Ftrue,rotFunc,dDotFunc,options.delta, options.Parameterization)) :: Function
+    return ((att,grad) -> _LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs, obj.Areas, obj.nu,obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, options.delta)) :: Function
 end
 
 function LMC(attitudes :: Array{Num,2} where {Num <: Number},

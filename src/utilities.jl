@@ -263,10 +263,23 @@ function customScenario(scenParams; vectorized = false)
         end
     end
 
+    # set observer number to match the number of observer vectors
     if typeof(scenvars[5]) == Vector{Vector{Float64}}
         scenvars[1] = length(scenvars[5])
+        dtemp = zeros(length(scenvars[5]))
+        if length(scenvars[3]) < length(scenvars[5])
+            dtemp[1:length(scenvars[3])] = scenvars[3]
+            dtemp[length(scenvars[3])+1:end] .= scenvars[3][1]
+        else
+            dtemp[1:length(scenvars[5])] = scenvars[3][1:length(scenvars[5])]
+        end
+        scenvars[3] = dtemp
     elseif typeof(scenvars[5]) == Matrix{Float64}
         scenvars[1] = size(scenvars[5],2)
+        dtemp = zeros(size(scenvars[5],2))
+        dtemp[1:length(scenvars[3])] = scenvars[3]
+        dtemp[length(scenvars[3])+1:end] .= scenvars[3][1]
+        scenvars[3] = dtemp
     end
 
     scenario = spaceScenario(scenvars...)
@@ -313,6 +326,35 @@ function lightMagFilteringProbGenerator(;x0 = zeros(6), P0 = zeros(6,6), x0true 
         # do nothing
     elseif (!(size(R,1) == scen.obsNo) | !(size(R,2) == scen.obsNo))
         error("Measurment Noise matrix must have same dimension as number of observers")
+    else
+        error("Please Provide a valid measurement Noise matrix")
+    end
+
+    if isnothing(measTimes)
+        measTimes = Array{Bool,1}(undef,length(tvec))
+        measTimes .= false
+    elseif length(measTimes) !== length(tvec)
+        error("length of time span and measurement time vector must match")
+    else
+        error("please provide valid measurement times")
+    end
+
+    return attFilteringProblem(x0, P0, x0true, xf0, Q, R, tvec, dynamicsFunc, measModel, scen.obsNo, measInt, measOffset, measTimes)
+end
+
+function AttFilteringProbGenerator(;x0 = zeros(6), P0 = zeros(6,6), x0true = [0;0;0;1;0;0;0], xf0 = x0true, Q = zeros(7,7), R = nothing, measInt = 1, measOffset = 0, tvec = [1:.1:10...], measTimes = nothing, scenParams = nothing, objParams = nothing, vectorized = false)
+
+    (sat,_,scen) = customScenarioGenerator(scenParams = scenParams, objParams = objParams, vectorized = vectorized)
+
+    dynamicsFunc = (t,x) -> attDyn(t,x,sat.J,inv(sat.J),[0;0;0])
+    measModel = (x) -> x[1:4]
+
+    if isnothing(R)
+        R = zeros(4,4)
+    elseif (size(R,1) == 4 & size(R,2) == 4)
+        # do nothing
+    elseif (!(size(R,1) == 4) | !(size(R,2) == 4))
+        error("Measurment Noise matrix must have same dimension as measurement")
     else
         error("Please Provide a valid measurement Noise matrix")
     end
@@ -505,11 +547,11 @@ function plotOptResults(results, qtrue, a=1, f=1)
 
     tvec = 1:length(results.fOptHist)
 
-    display(plot(tvec,results.fOptHist))
+    plot(tvec,results.fOptHist)
 
     errors = attitudeErrors(p2q(results.xOptHist,a,f),qtrue)
     errAng = [norm(col) for col in eachcol(errors)]
-    display(plot(tvec,errAng))
+    plot(tvec,errAng)
 
     clNo = length(results.clusterfOptHist[1])
 
@@ -597,6 +639,15 @@ function visGroupAnalysisFunction(sampleNo,maxIterations,binNo)
     end
 end
 
+function attLMFIM(att,sat,scen,R)
+
+
+
+    dhdx = ForwardDiff.jacobian(A -> _Fobs( A, sat.nvecs, sat.uvecs, sat.vvecs, sat.Areas, sat.nu, sat.nv, sat.Rdiff, sat.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, qRotate), att)
+
+    FIM = dhdx'*inv(R)*dhdx
+end
+
 import Base.isassigned
 function isassigned(x1 :: Array{Float64,1}, x2 :: Colon)
 
@@ -619,6 +670,34 @@ function isassigned(x1 :: Array{Array{Float64,1},1}, x2 :: Colon)
         end
     end
     return out
+end
+
+function normVecClustering(x :: ArrayOfVecs, ind :: Vector{Int64}, sat :: targetObject, scen :: spaceScenario, rotFunc :: Function)
+
+    nvecs = unique(sat.nvecs)
+    dvals = Array{Array{typeof(scen.sunVec[1]),1},1}(undef,length(nvecs))
+    hvecs = Array{Array{typeof(scen.sunVec[1]),1},1}(undef,length(scen.obsVecs))
+    temp = Array{typeof(scen.sunVec[1]),1}(undef,length(scen.obsVecs))
+
+    for i = 1:length(x)
+
+        (sunVec :: Vec, obsVecs :: ArrayOfVecs) = _toBodyFrame(x[i],scen.sunVec,scen.obsVecs,rotFunc)
+
+        for j = 1:length(obsVecs)
+            hvecs[j] = (sunVec + obsVecs[j])./norm(sunVec + obsVecs[j])
+        end
+
+        for j = 1:length(nvecs)
+            for k = 1:length(hvecs)
+                temp[k] = dot(hvecs[k],nvecs[j])
+            end
+            dvals[j] = copy(temp)
+        end
+        # @infiltrate
+        # error()
+        ind[i] = argmin(norm.(dvals))
+
+    end
 end
 
 # macro tryinfiltrate(expr)
