@@ -8,44 +8,6 @@ const MatOrVec = Union{Mat,Vec}
 const anyAttitude = Union{Mat,Vec,DCM,MRP,GRP,quaternion}
 const Num = N where N <: Number
 
-struct targetObject
-    facetNo :: Int64
-    Areas :: MatOrVec
-    nvecs :: MatOrVecs
-    vvecs :: MatOrVecs
-    uvecs :: MatOrVecs
-    nu :: MatOrVec
-    nv :: MatOrVec
-    Rdiff :: MatOrVec
-    Rspec :: MatOrVec
-    J :: Mat
-    bodyFrame :: MatOrVecs
-end
-
-struct targetObjectFull
-    facetNo :: Int64
-    vertices :: Mat
-    vertList
-    Areas :: MatOrVec
-    nvecs :: MatOrVecs
-    vvecs :: MatOrVecs
-    uvecs :: MatOrVecs
-    nu :: MatOrVec
-    nv :: MatOrVec
-    Rdiff :: MatOrVec
-    Rspec :: MatOrVec
-    J :: Mat
-    bodyFrame :: MatOrVecs
-end
-
-struct spaceScenario
-    obsNo :: Int64
-    C :: N where {N <: Number}
-    d :: MatOrVec
-    sunVec :: Vec
-    obsVecs :: MatOrVecs
-end
-
 @with_kw struct PSO_parameters
     # vector contining min and max alpha values for cooling schedule
     av :: Array{Float64,1} = [.6; .2]
@@ -107,7 +69,9 @@ struct optimizationOptions
     # choose whether the multiplicative PSO is used
     algorithm :: Symbol
     # choose method for particle initialization
-    initMethod :: String
+    initMethod :: Symbol
+    # give initial conditions (if initMethod is )
+    initVals :: Union{anyAttitude, ArrayOfVecs}
     # determines if full particle history at each interation is saved in particle based optimization
     saveFullHist :: Bool
     # cost function parameter
@@ -120,10 +84,10 @@ struct optimizationOptions
     std :: Float64
 end
 
-function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = false, Parameterization = quaternion, algorithm = :MPSO_cluster, initMethod = "random", saveFullHist = false,delta = 1e-50,noise = false, mean = 0, std = 1e-15)
+function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = false, Parameterization = quaternion, algorithm = :MPSO, initMethod = :random, initVals = [0.0;0;0;1], saveFullHist = false,delta = 1e-50,noise = false, mean = 0, std = 1e-15)
 
     optimizationOptions(vectorizeOptimization,vectorizeCost,Parameterization,
-    algorithm,initMethod,saveFullHist,delta,noise,mean,std)
+    algorithm,initMethod,initVals,saveFullHist,delta,noise,mean,std)
 end
 
 struct optimizationResults

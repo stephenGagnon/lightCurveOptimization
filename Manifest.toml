@@ -233,9 +233,7 @@ version = "0.8.2"
 
 [[MATLABfunctions]]
 deps = ["MATLAB"]
-git-tree-sha1 = "f14138ac7d7caa2d43fa72763bc9dfde0b94c993"
-repo-rev = "master"
-repo-url = "/Users/stephengagnon/.julia/dev/MATLABfunctions"
+path = "/Users/stephengagnon/.julia/dev/MATLABfunctions"
 uuid = "b30ad2df-b50a-4868-b889-ccad604802ef"
 version = "0.1.0"
 
@@ -512,10 +510,22 @@ version = "0.9.3"
 deps = ["Libdl"]
 uuid = "83775a58-1f1d-513f-b197-d71354ab007a"
 
-[[myFilters]]
-git-tree-sha1 = "c1ec839a43619a8bd2f5a2976a553e1e319fcd10"
+[[attitudeFunctions]]
+deps = ["LinearAlgebra", "Random"]
+path = "/Users/stephengagnon/.julia/dev/attitudeFunctions"
+uuid = "7493c2ef-4a11-4f18-aeab-b8ca9ae8f56a"
+version = "0.1.0"
+
+[[lightCurveModeling]]
+git-tree-sha1 = "672ed781c0fabe614e08f80c5884e3626bff98ad"
 repo-rev = "master"
-repo-url = "/Users/stephengagnon/.julia/dev/myFilters"
+repo-url = "/Users/stephengagnon/.julia/dev/lightCurveModeling"
+uuid = "bbb4d786-ea76-4613-b8bd-e0066326f386"
+version = "0.1.0"
+
+[[myFilters]]
+deps = ["Distributions", "LinearAlgebra", "Statistics", "attitudeFunctions", "lightCurveModeling"]
+path = "/Users/stephengagnon/.julia/dev/myFilters"
 uuid = "81456be0-7a9e-4877-8423-9bcd083e1f21"
 version = "0.1.0"
 
