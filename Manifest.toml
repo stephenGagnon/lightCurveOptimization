@@ -523,12 +523,6 @@ repo-url = "/Users/stephengagnon/.julia/dev/lightCurveModeling"
 uuid = "bbb4d786-ea76-4613-b8bd-e0066326f386"
 version = "0.1.0"
 
-[[myFilters]]
-deps = ["Distributions", "LinearAlgebra", "Statistics", "attitudeFunctions", "lightCurveModeling"]
-path = "/Users/stephengagnon/.julia/dev/myFilters"
-uuid = "81456be0-7a9e-4877-8423-9bcd083e1f21"
-version = "0.1.0"
-
 [[nghttp2_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "8e850ede-7688-5339-a07c-302acd2aaf8d"
