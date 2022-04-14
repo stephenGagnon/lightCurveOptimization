@@ -1,16 +1,16 @@
-function costFuncGenPSO(obj :: targetObject, scen :: spaceScenario, trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0)
+function costFuncGenPSO(trueState :: Vector, prob :: LMoptimizationProblem, Parameterization = quaternion, includeGrad = false :: Bool)
 
-    Ftrue = Fobs(trueAttitude, obj, scen, a , f)
+    a = prob.a
+    f = prob.f
+    obj = prob.object
+    scen = prob.scenario
 
-    if options.noise
-        Fnoise = rand(Normal(options.mean,options.std),scen.obsNo)
-        Ftrue += Fnoise
-    end
-
-    if (options.Parameterization == MRP) | (options.Parameterization == GRP)
+    if (Parameterization == MRP) | (Parameterization == GRP)
+        trueAtt = trueState[1:3]
         rotFunc = ((A,v) -> p2A(A,a,f)*v) :: Function
         dDotFunc = ((v1,v2,att) -> -dDotdp(v1,v2,-att))
-    elseif options.Parameterization == quaternion
+    elseif Parameterization == quaternion
+        trueAtt = trueState[1:4]
         rotFunc = qRotate :: Function
         dDotFunc = ((v1,v2,att) -> qinv(dDotdq(v1,v2,qinv(att))))
     else
@@ -19,36 +19,34 @@ function costFuncGenPSO(obj :: targetObject, scen :: spaceScenario, trueAttitude
         or 'quaternion' ")
     end
 
-    if options.algorithm == :MPSO_AVC
+    Ftrue = Fobs(trueAtt, obj, scen, a , f)
 
-        if options.vectorizeCost == true
-
-            return (att,grad) -> LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs,obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, options.delta)
-
-        elseif options.vectorizeCost == false
-
-            return (att,grad) -> LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs,obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, options.delta)
-
-        end
-    else
-        return ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,
-        obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs, scen.d,scen.C,Ftrue,rotFunc,options.delta)) :: Function
-    end
-end
-
-function costFuncGenNLopt(obj :: targetObject, scen :: spaceScenario, trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0) :: Function
-
-    Ftrue = Fobs(trueAttitude, obj, scen, a , f)
-
-    if options.noise
-        Fnoise = rand(Normal(options.mean,options.std),scen.obsNo)
+    if prob.noise
+        Fnoise = rand(Normal(prob.mean,prob.std),scen.obsNo)
         Ftrue += Fnoise
     end
 
-    if (options.Parameterization == MRP) | (options.Parameterization == GRP)
+    if includeGrad
+        return (att,grad) -> LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs,obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, prob.delta)
+    else
+        return ((att) -> LMC(att,obj.nvecs,obj.uvecs,obj.vvecs,
+        obj.Areas,obj.nu,obj.nv,obj.Rdiff,obj.Rspec,scen.sunVec,scen.obsVecs, scen.d,scen.C,Ftrue,rotFunc,prob.delta)) :: Function
+    end
+end
+
+function costFuncGenNLopt(trueState ::Vector, prob :: LMoptimizationProblem, Parameterization = MRP) :: Function
+
+    a = prob.a
+    f = prob.f
+    obj = prob.object
+    scen = prob.scenario
+
+    if (Parameterization == MRP) | (Parameterization == GRP)
+        trueAtt = trueState[1:3]
         rotFunc = ((A,v) -> p2A(A,a,f)*v) :: Function
         # dDotFunc = ((v1,v2,att) -> -dDotdp(v1,v2,-att))
-    elseif options.Parameterization == quaternion
+    elseif Parameterization == quaternion
+        trueAtt = trueState[1:4]
         rotFunc = qRotate :: Function
         # dDotFunc = ((v1,v2,att) -> qinv(dDotdq(v1,v2,qinv(att))))
     else
@@ -57,7 +55,46 @@ function costFuncGenNLopt(obj :: targetObject, scen :: spaceScenario, trueAttitu
         or 'quaternion' ")
     end
 
-    return ((att,grad) -> _LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs, obj.Areas, obj.nu,obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, options.delta)) :: Function
+    Ftrue = Fobs(trueAtt, obj, scen, a , f)
+
+    if prob.noise
+        Fnoise = rand(Normal(prob.mean,prob.std),scen.obsNo)
+        Ftrue += Fnoise
+    end
+
+    return ((att,grad) -> _LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs, obj.Areas, obj.nu,obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, prob.delta)) :: Function
+end
+
+function costFuncGenPSO_full_state(trueState, prob :: LMoptimizationProblem)
+
+    a = prob.a
+    f = prob.f
+    obj = prob.object
+    scen = prob.scenario
+
+    rotFunc = qRotate :: Function
+    dDotFunc = ((v1,v2,att) -> qinv(dDotdq(v1,v2,qinv(att))))
+
+    Ftrue1 = Fobs(trueState[1:4], obj, scen, a , f)
+    att2 = qPropDisc(trueState[5:7], trueState[1:4], prob.dt)
+    Ftrue2 = Fobs(att2, obj, scen, a , f)
+
+    if prob.noise
+        # Fnoise1 = rand(Normal(prob.mean,prob.std),scen.obsNo)
+        Ftrue1  += rand(Normal(prob.mean,prob.std),scen.obsNo)
+        # Fnoise2 = rand(Normal(prob.mean,prob.std),scen.obsNo)
+        Ftrue2  += rand(Normal(prob.mean,prob.std),scen.obsNo)
+    end
+
+    return (x) ->
+        begin
+            cost = Array{Float64,1}(undef,length(x))
+            for i = 1:length(x)
+                cost[i] = _LMC(view(x[i],1:4), obj.nvecs, obj.uvecs, obj.vvecs,obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue1, rotFunc, prob.delta) + _LMC(qPropDisc(view(x[i],5:7), view(x[i],1:4), prob.dt), obj.nvecs, obj.uvecs, obj.vvecs,obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue2, rotFunc, prob.delta)
+
+            end
+            return cost
+        end
 end
 
 function LMC(attitudes :: Array{Num,2} where {Num <: Number},

@@ -1,8 +1,13 @@
-function constraintGen(obj :: targetObject, scen :: spaceScenario, trueAttitude :: anyAttitude, options :: optimizationOptions, a = 1.0, f = 1.0)
+function constraintGen(trueAttitude :: anyAttitude, prob :: LMoptimizationProblem, Parameterization, type :: Symbol)
 
-    if (options.Parameterization == MRP) | (options.Parameterization == GRP)
+    a = prob.a
+    f = prob.f
+    obj = prob.object
+    scen = prob.scenario
+
+    if (Parameterization == MRP) | (Parameterization == GRP)
         rotFunc = ((A,v) -> p2A(A,a,f)*v)
-    elseif options.Parameterization == quaternion
+    elseif Parameterization == quaternion
         rotFunc = qRotate
     else
         error("Please provide a valid attitude representation type. Options are:
@@ -14,10 +19,10 @@ function constraintGen(obj :: targetObject, scen :: spaceScenario, trueAttitude 
     visGroupTrue = _findVisGroup(obj.nvecs,sunVec,obsVecs,obj.facetNo,scen.obsNo)
     constrNo = length(findall(visGroupTrue.isConstraint))
 
-    if any(options.algorithm .== [:MPSO,:PSO_cluster])
+    if type == :PSO
         func = ((att) -> LMConstr(att, obj.nvecs, scen.sunVec,
             scen.obsVecs, rotFunc, visGroupTrue, scen.obsNo, obj.facetNo,constrNo))
-    elseif any(options.algorithm .== [:LD_SLSQP])
+    elseif type == :GB
         func = ((result,att,grad) -> _LMConstr(result, att, grad, obj.nvecs, scen.sunVec,
             scen.obsVecs, rotFunc, visGroupTrue, scen.obsNo, obj.facetNo,constrNo))
     else

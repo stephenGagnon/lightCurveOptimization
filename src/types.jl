@@ -27,21 +27,16 @@ const Num = N where N <: Number
     tmax :: Int64 = 100
     # bounds on design variables
     Lim :: Float64 = 1.0
-    # objective function change tolerance
-    tol :: Float64 = 1e-6
-    # objective funcion absolute tolerance (assumes optimum value of 0)
-    abstol :: Float64 = 1e-6
-    # determines whether full particle history should be saved
-    saveFullHist = false
 end
 
 @with_kw struct GB_parameters
     maxeval :: Num = 100000
     maxtime :: Num = 5
+    N :: Num = 1
 end
 
 struct PSO_results{T}
-    xHist :: Union{Array{Array{T,1},1}, Array{Array{Float64,2},1}}#Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1},Nothing}
+    xHist :: Union{Array{Array{T,1},1}, Array{Array{Float64,2},1}} #Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1},Nothing}
     fHist :: ArrayOfVecs
     xOptHist :: Array{T,1}
     fOptHist :: Vec
@@ -57,48 +52,91 @@ struct GB_results
     ref
 end
 
-struct optimizationOptions
-    # set whether the optimizer represents attitudes as 1D arrays of custom types
-    # or as 2D arrays where columns correspond to attitudes
-    vectorizeOptimization :: Bool
-    # determines whether cost function is vectorized or evaluated in loops
-    vectorizeCost :: Bool
-    # set the attitude parameterization that defines the search space of the
-    #optimization
-    Parameterization :: Type
-    # choose whether the multiplicative PSO is used
-    algorithm :: Symbol
-    # choose method for particle initialization
-    initMethod :: Symbol
-    # give initial conditions (if initMethod is )
-    initVals :: Union{anyAttitude, ArrayOfVecs}
-    # determines if full particle history at each interation is saved in particle based optimization
-    saveFullHist :: Bool
-    # cost function parameter
+struct LMoptimizationProblem
+    # time between measurements if multiple sequential measurements are used for full state estimation
+    dt :: Float64
+    #upper bound on angular velocity
+    angularVelocityBound :: Float64
+    # structure containg data about target object necessary to compute reflected light intensity e.g. facet normal vectors and material properties. See lightCurveModeling package for more details
+    object :: targetObject
+    # structure containing all the information in the object structure in addition to some more data for generating plots/renders of the object
+    objectFullData :: targetObjectFull
+    # structure containing data about the locations and properties of light sources and observers. See lightCurveModeling package for more details
+    scenario :: spaceScenario
+    # boolean that is true if the problem has constraints
+    isConstrained :: Bool
+    # function that returns the value of the constraint for a given state
+    constriantFunction :: Function
+    # Cost function parameter. See specific cost functions for more details
     delta :: Float64
-    # boolean to determine if noise should be considered
+    # boolean to determine if noise on measurements should be considered
     noise :: Bool
     # mean value of noise
     mean :: Float64
     # standard deviation of noise
     std :: Float64
+    # grp parameters
+    a :: Float64
+    f :: Float64
+
+    function LMoptimizationProblem(dt = .1, angularVelocityBound = 3.0; object = targetObject(), objectFullData = targetObjectFull(), scenario = spaceScenario(), isConstrained = false, constraintFunction = (x) -> 0, delta = 1e-50,noise = false, mean = 0, std = 1e-15, a = 1, f = 1)
+
+        if !isdefined(object,2)
+            obj, objf = simpleSatellite()
+            object = obj
+            if !isdefined(objectFullData,2)
+                objectFullData = objf
+            end
+        end
+
+        if !isdefined(scenario,2)
+            scenario = simpleScenario()
+        end
+
+        new(dt, angularVelocityBound, object, objectFullData, scenario, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
+    end
 end
 
-function optimizationOptions(;vectorizeOptimization = false, vectorizeCost = false, Parameterization = quaternion, algorithm = :MPSO, initMethod = :random, initVals = [0.0;0;0;1], saveFullHist = false,delta = 1e-50,noise = false, mean = 0, std = 1e-15)
+struct LMoptimizationOptions
 
-    optimizationOptions(vectorizeOptimization,vectorizeCost,Parameterization,
-    algorithm,initMethod,initVals,saveFullHist,delta,noise,mean,std)
+    # or as 2D arrays where columns correspond to attitudes
+    vectorize :: Bool
+    # choose whether the multiplicative PSO is used
+    algorithm :: Symbol
+    # set the attitude parameterization
+    Parameterization :: Type
+    # algorithm to use for clustering
+    clusteringType :: Symbol
+    # choose method for particle initialization
+    initMethod :: Symbol
+    # give initial conditions (if initMethod is )
+    initVals :: Union{anyAttitude, ArrayOfVecs}
+    # parameters for optimiation
+    optimizationParams :: Union{PSO_parameters, GB_parameters}
+    # determines if full particle history at each interation is saved in particle based optimization
+    saveFullHist :: Bool
+    # objective function change tolerance
+    tol :: Float64
+    # objective funcion absolute tolerance (assumes optimum value of 0)
+    abstol :: Float64
+    function LMoptimizationOptions(;vectorize = false, algorithm = :MPSO, Parameterization = quaternion, clusteringType = :kmeans, initMethod = :random, initVals = [0.0;0;0;1], optimizationParams = PSO_parameters(), saveFullHist = false, tol = 1e-6, abstol = 1e-6)
+
+        new(vectorize, algorithm, Parameterization, clusteringType, initMethod, initVals, optimizationParams, saveFullHist, tol, abstol)
+    end
 end
 
-struct optimizationResults
 
+struct LMoptimizationResults
     results :: Union{PSO_results, GB_results}
-    object :: targetObject
-    objectFullData :: targetObjectFull
-    scenario :: spaceScenario
-    PSO_params :: Union{PSO_parameters, GB_parameters}
-    trueAttitude :: anyAttitude
-    options :: optimizationOptions
+    trueState :: Vector
+    problem :: LMoptimizationProblem
+    options :: LMoptimizationOptions
+    # object :: targetObject
+    # objectFullData :: targetObjectFull
+    # scenario :: spaceScenario
+    # PSO_params :: Union{PSO_parameters, GB_parameters}
+    # trueAttitude :: anyAttitude
+
 end
 
 struct visibilityGroup
