@@ -62,7 +62,41 @@ function costFuncGenNLopt(trueState ::Vector, prob :: LMoptimizationProblem, Par
         Ftrue += Fnoise
     end
 
-    return ((att,grad) -> _LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs, obj.Areas, obj.nu,obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, prob.delta)) :: Function
+    return ((att :: Vector, grad :: Vector) -> _LMC(att, grad, obj.nvecs, obj.uvecs, obj.vvecs, obj.Areas, obj.nu,obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, prob.delta)) :: Function
+end
+
+function costFuncGenFD(trueState :: Vector, prob :: LMoptimizationProblem, Parameterization = MRP)
+    a = prob.a
+    f = prob.f
+    obj = prob.object
+    scen = prob.scenario
+
+    if (Parameterization == MRP) | (Parameterization == GRP)
+        trueAtt = trueState[1:3]
+        rotFunc = ((A,v) -> p2A(A,a,f)*v) :: Function
+        n = 3
+        # dDotFunc = ((v1,v2,att) -> -dDotdp(v1,v2,-att))
+    elseif Parameterization == quaternion
+        trueAtt = trueState[1:4]
+        rotFunc = qRotate :: Function
+        n = 4
+        # dDotFunc = ((v1,v2,att) -> qinv(dDotdq(v1,v2,qinv(att))))
+    else
+        error("Please provide a valid attitude representation type. Options are:
+        'MRP' (modified Rodrigues parameters), 'GRP' (generalized Rodrigues parameters),
+        or 'quaternion' ")
+    end
+
+    Ftrue = Fobs(trueAtt, obj, scen, a , f)
+
+    if prob.noise
+        Fnoise = rand(Normal(prob.mean,prob.std),scen.obsNo)
+        Ftrue += Fnoise
+    end
+
+    func = forwardDiffWrapper((att) -> _LMC(att, obj.nvecs, obj.uvecs, obj.vvecs, obj.Areas, obj.nu,obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, Ftrue, rotFunc, prob.delta), n)
+
+    return (att :: Vector, grad :: Vector) -> func(att, grad)
 end
 
 function costFuncGenPSO_full_state(trueState, prob :: LMoptimizationProblem)
@@ -196,13 +230,13 @@ function LMC(attitudes :: Array{T,1} where {T<:Union{quaternion,MRP,GRP,DCM}},
     return cost
 end
 
-function _LMC(att :: anyAttitude, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs, Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec, usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Num where {Num <: Number}, Ftrue :: Vec, rotFunc :: Function, delta :: Float64)
+function _LMC(att :: anyAttitude, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs, Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec, usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Number, Ftrue :: Vec, rotFunc :: Function, delta :: Float64)
 
     return sum(((_Fobs(att,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,rotFunc) -
      Ftrue)./(Ftrue .+ delta)).^2)
 end
 
-function _LMC(att :: anyAttitude, grad :: Array{Float64,1}, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs, Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec, usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Num where {Num <: Number}, Ftrue :: Vec, rotFunc :: Function, delta :: Float64)
+function _LMC(att :: anyAttitude, grad :: AbstractArray, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs, Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec, usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Number, Ftrue :: Vec, rotFunc :: Function, delta :: Float64)
 
     # dDotFunc :: Function,, parameterization
     Fobs_ = _Fobs(att,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,rotFunc)

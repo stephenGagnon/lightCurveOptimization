@@ -6,38 +6,76 @@ const VecOfArrayOfVecs{T<:Number} = Vector{Vector{Vector{T}}}
 const MatOrVecs = Union{Mat,ArrayOfVecs}
 const MatOrVec = Union{Mat,Vec}
 const anyAttitude = Union{Mat,Vec,DCM,MRP,GRP,quaternion}
-const Num = N where N <: Number
 
-@with_kw struct PSO_parameters
+abstract type optParams
+end
+
+struct PSO_parameters <: optParams
     # vector contining min and max alpha values for cooling schedule
-    av :: Array{Float64,1} = [.6; .2]
+    av :: Array{Float64,1}
     # local and global optimum velocity coefficients
-    bl :: Float64 = 1.8
-    bg :: Float64 = .6
+    bl :: Float64
+    bg :: Float64
     # parameter for epsilor greedy clustering, gives the fraction of particles
     # that follow their local cluster
-    evec :: Array{Float64,1} = [.5; .9]
+    evec :: Array{Float64,1}
     # number of clusters
-    Ncl :: Int64 = 20
+    Ncl :: Int64
     # interval that clusters are recalculated at
-    clI :: Int64 = 5
+    clI :: Int64
     # population size
-    N :: Int64 = 1000
+    N :: Int64
     # maximum iterations
-    tmax :: Int64 = 100
+    tmax :: Int64
     # bounds on design variables
-    Lim :: Float64 = 1.0
+    Lim :: Float64
+
+    function PSO_parameters(;av = [.6, .2], bl = 1.8, bg = .6, evec = [.5; .9], Ncl = 20, clI = 5, N = 1000, tmax = 100, Lim = 1.0)
+        # N = 1000, Ncl = 20, tmax = 100, av = [.9,.2], bl = 1, bg = .3, evec = [.5, .9], clI = 5
+        new(av, bl,bg, evec, Ncl, clI, N, tmax, Lim)
+    end
+
+    function PSO_parameters(av, bl, bg, evec, Ncl, clI, N, tmax, Lim)
+
+        new(av, bl,bg, evec, Ncl, clI, N, tmax, Lim)
+    end
 end
 
-@with_kw struct GB_parameters
-    maxeval :: Num = 100000
-    maxtime :: Num = 5
-    N :: Num = 1
+struct GB_parameters <: optParams
+    maxeval :: Number
+    maxtime :: Number
+    N :: Number
+
+    function GB_parameters(;maxeval = 10000, maxtime = .1, N = 1)
+        new(maxeval, maxtime, N)
+    end
+
+    function GB_parameters(maxeval, maxtime, N)
+        new(maxeval, maxtime, N)
+    end
 end
 
-struct PSO_results{T}
-    xHist :: Union{Array{Array{T,1},1}, Array{Array{Float64,2},1}} #Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1},Nothing}
-    fHist :: ArrayOfVecs
+struct EGB_parameters <: optParams
+    maxeval :: Number
+    maxtime :: Number
+    N :: Number
+    ncl :: Number
+
+    function EGB_parameters(;maxeval = 150, maxtime = .05, N = 100, ncl = 20)
+        new(maxeval, maxtime, N, ncl)
+    end
+
+    function EGB_parameters(maxeval, maxtime, N, ncl)
+        new(maxeval, maxtime, N, ncl)
+    end
+end
+
+abstract type optResults
+end
+
+struct PSO_results{T} <: optResults
+    xHist :: Union{Array{Array{T,1},1}, Array{Array{Float64,2},1}, Nothing} #Union{ArrayofMats, Array{Array{MRP,1},1},Array{Array{GRP,1},1},Array{Array{quaternion,1},1},Array{Array{DCM,1},1},Nothing}
+    fHist :: Union{ArrayOfVecs, Nothing}
     xOptHist :: Array{T,1}
     fOptHist :: Vec
     clusterxOptHist :: Union{Array{Array{T,1},1}, Array{Array{Float64,2},1}}
@@ -46,10 +84,17 @@ struct PSO_results{T}
     fOpt :: Float64
 end
 
-struct GB_results
-    fOpt :: Num where {Num <: Number}
+struct GB_results <: optResults
+    fOpt :: Number
     xOpt :: Vec
     ref
+end
+
+struct EGB_results <: optResults
+    fOpt :: Number
+    xOpt :: Vec
+    clfOpt :: Vec
+    clxOpt :: Array{T,1} where {T <: Vec}
 end
 
 struct LMoptimizationProblem
@@ -79,7 +124,7 @@ struct LMoptimizationProblem
     a :: Float64
     f :: Float64
 
-    function LMoptimizationProblem(dt = .1, angularVelocityBound = 3.0; object = targetObject(), objectFullData = targetObjectFull(), scenario = spaceScenario(), isConstrained = false, constraintFunction = (x) -> 0, delta = 1e-50,noise = false, mean = 0, std = 1e-15, a = 1, f = 1)
+    function LMoptimizationProblem(;dt = .1, angularVelocityBound = 3.0, object = targetObject(), objectFullData = targetObjectFull(), scenario = spaceScenario(), isConstrained = false, constraintFunction = (x) -> 0, delta = 1e-50, noise = false, mean = 0, std = 1e-15, a = 1, f = 1)
 
         if !isdefined(object,2)
             obj, objf = simpleSatellite()
@@ -93,6 +138,10 @@ struct LMoptimizationProblem
             scenario = simpleScenario()
         end
 
+        new(dt, angularVelocityBound, object, objectFullData, scenario, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
+    end
+
+    function LMoptimizationProblem(dt, angularVelocityBound, object, objectFullData, scenario, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
         new(dt, angularVelocityBound, object, objectFullData, scenario, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
     end
 end
@@ -112,22 +161,51 @@ struct LMoptimizationOptions
     # give initial conditions (if initMethod is )
     initVals :: Union{anyAttitude, ArrayOfVecs}
     # parameters for optimiation
-    optimizationParams :: Union{PSO_parameters, GB_parameters}
+    optimizationParams :: optParams
     # determines if full particle history at each interation is saved in particle based optimization
     saveFullHist :: Bool
     # objective function change tolerance
     tol :: Float64
     # objective funcion absolute tolerance (assumes optimum value of 0)
     abstol :: Float64
-    function LMoptimizationOptions(;vectorize = false, algorithm = :MPSO, Parameterization = quaternion, clusteringType = :kmeans, initMethod = :random, initVals = [0.0;0;0;1], optimizationParams = PSO_parameters(), saveFullHist = false, tol = 1e-6, abstol = 1e-6)
+    # boolean that determines if the results of the opitmization will be further optimzied using LD_SLSQP to further converge
+    GB_cleanup :: Bool
 
-        new(vectorize, algorithm, Parameterization, clusteringType, initMethod, initVals, optimizationParams, saveFullHist, tol, abstol)
+    function LMoptimizationOptions(;vectorize = false, algorithm = :MPSO, Parameterization = quaternion, clusteringType = :kmeans, initMethod = :random, initVals = [0.0;0;0;1], optimizationParams = PSO_parameters(), saveFullHist = false, tol = 1e-6, abstol = 1e-6, GB_cleanup = false)
+
+        if any(algorithm .== (:MPSO, :MPSO_VGC, :MPSO_NVC, :PSO_cluster, :MPSO_full_state))
+            if typeof(optimizationParams) !== PSO_parameters
+                optimizationParams = PSO_parameters()
+            end
+
+            Parameterization = quaternion
+        elseif any(algorithm .== (:LD_SLSQP))
+
+            if typeof(optimizationParams) !== GB_parameters
+                optimizationParams = GB_parameters()
+            end
+        elseif algorithm == :ELD_SLSQP
+            if typeof(optimizationParams) !== EGB_parameters
+                optimizationParams = EGB_parameters()
+            end
+        end
+
+        if initMethod == :random
+            initVals = randomAtt(1,Parameterization)
+        end
+
+        new(vectorize, algorithm, Parameterization, clusteringType, initMethod, initVals, optimizationParams, saveFullHist, tol, abstol, GB_cleanup)
+    end
+
+    function LMoptimizationOptions(vectorize, algorithm, Parameterization, clusteringType, initMethod, initVals, optimizationParams, saveFullHist, tol, abstol, GB_cleanup)
+
+        new(vectorize, algorithm, Parameterization, clusteringType, initMethod, initVals, optimizationParams, saveFullHist, tol, abstol, GB_cleanup)
     end
 end
 
 
 struct LMoptimizationResults
-    results :: Union{PSO_results, GB_results}
+    results :: optResults
     trueState :: Vector
     problem :: LMoptimizationProblem
     options :: LMoptimizationOptions

@@ -67,6 +67,22 @@ function Convert_PSO_results(results :: PSO_results, attType, a = 1,f = 1)
     results.clusterfOptHist, xOpt,results.fOpt)
 end
 
+function forwardDiffWrapper(func, dim)
+
+    t = Array{Float64,1}(undef,dim)
+    result = DiffResults.GradientResult(t)
+    func_out = (x, grad :: Vector) ->
+    begin
+        result = ForwardDiff.gradient!(result, func, x)
+        fval = DiffResults.value(result)
+        if length(grad) > 0
+            grad[:] = DiffResults.gradient(result)
+        end
+        return fval
+    end
+    return func_out
+end
+
 function checkConvergence(OptResults; attitudeThreshold = 5, angVelThreshold = .01)
 
     if typeof(OptResults) == LMoptimizationResults
@@ -100,53 +116,10 @@ end
 
 function _checkConvergence(OptResults, attitudeThreshold, angVelThreshold)
 
-    # if typeof(OptResults.trueState) <: Vec
-    #     if size(OptResults.trueState) == (4,)
-    #         trueAtt = OptResults.trueState
-    #     elseif size(OptResults.trueState) == (3,)
-    #         trueAtt = p2q(OptResults.trueState)
-    #     elseif size(OptResults.trueState) == (6,)
-    #         trueAtt = p2q(OptResults.trueState[1:3])
-    #     elseif size(OptResults.trueState) == (7,)
-    #         trueAtt = OptResults.trueState[1:4]
-    #     end
-    # elseif typeof(OptResults.trueState) == quaternion
-    #     trueAtt = [OptResults.trueState.v;OptResults.trueState.s]
-    # elseif typeof(OptResults.trueState) == DCM
-    #     trueAtt = A2q(OptResults.trueState)
-    # elseif typeof(OptResults.trueState) == MRP
-    #     trueAtt = p2q(OptResults.trueState)
-    # elseif typeof(OptResults.trueState) == Array{Array{Float64,2},1}
-    #     trueAtt = [A2q(A) for A in OptResults.trueState]
-    # elseif typeof(OptResults.trueState) == Array{Array{Float64,1},1}
-    #     if size(OptResults.trueState[1]) == (4,)
-    #         trueAtt = OptResults.trueState[1]
-    #     elseif size(OptResults.trueState[1]) == (3,)
-    #         trueAtt = p2q(OptResults.trueState[1])
-    #     elseif size(OptResults.trueState[1]) == (6,)
-    #         trueAtt = p2q(OptResults.trueState[1][1:3])
-    #     elseif size(OptResults.trueState[1]) == (7,)
-    #         trueAtt = OptResults.trueState[1][1:4]
-    #     end
-    # else
-    #     error("invalid attitude")
-    # end
-
     if typeof(OptResults.results) <: PSO_results
-
 
         optConv, optErr = _checkStateConvergence(OptResults.results.xOpt, OptResults.trueState, any(OptResults.options.algorithm .== (:MPSO_full_state)), attitudeThreshold, angVelThreshold)
 
-        # (optConvA, optErrA) =
-        #  _checkAttConvergence(OptResults.results.xOpt, trueState, attitudeThreshold = 5)
-        #
-        #  if any(OptResults.options.algorithm .== (:MPSO_full_state))
-        #      #check convergence of angular velocity components
-        #      w_true = OptResults.trueState[end-3:end]
-        #      w_opt = OptResults.results.xOpt[end-3:end]
-        #      optErrW = norm(w_true-w_opt)
-        #      optConvW = optErrW < angVelThreshold
-        #  end
         if any(OptResults.options.algorithm .== (:MPSO_full_state))
             # change this to handle full state returns
             convTemp = Array{Array{Bool,1},1}(undef, size(OptResults.results.clusterxOptHist[end],2))
@@ -159,27 +132,12 @@ function _checkConvergence(OptResults, attitudeThreshold, angVelThreshold)
         # replace this with function
         for j = 1:size(OptResults.results.clusterxOptHist[end],2)
 
-            # convTemp[j], errAngTemp[j] =
-            #  _checkConvergence(OptResults.results.clusterxOptHist[end][:,j],
-            #  trueAtt, attitudeThreshold = 5)
-            #
-            #  if any(OptResults.options.algorithm .== (:MPSO_full_state))
-            #      #check convergence of angular velocity components
-            #      w_true = OptResults.trueState[end-3:end]
-            #      w_opt = OptResults.results.xOpt[end-3:end]
-            #      optWerr = norm(w_true-w_opt)
-            #  end
             convTemp[j], errTemp[j] = _checkStateConvergence(OptResults.results.clusterxOptHist[end][:,j], OptResults.trueState, any(OptResults.options.algorithm .== (:MPSO_full_state)), attitudeThreshold, angVelThreshold)
 
         end
         # need to fix this to handle att + angvel
         if any(OptResults.options.algorithm .== (:MPSO_full_state))
-            # convTempFull = [c[1]&c[2] for c in convTemp]
-            # if any(convTempFull)
-            #     clOptConv = true
-            # else
-            #     clOptConv = false
-            # end
+
             clOptConv = convTemp
             clOptErr = errTemp
         else
@@ -193,6 +151,39 @@ function _checkConvergence(OptResults, attitudeThreshold, angVelThreshold)
 
     elseif typeof(OptResults.results) <: GB_results
         return  _checkAttConvergence(OptResults.results.xOpt, OptResults.trueState, attitudeThreshold)
+
+    elseif typeof(OptResults.results) <: EGB_results
+
+        optConv, optErr = _checkStateConvergence(OptResults.results.xOpt, OptResults.trueState, any(OptResults.options.algorithm .== (:MPSO_full_state)), attitudeThreshold, angVelThreshold)
+
+        if any(OptResults.options.algorithm .== (:MPSO_full_state))
+            # change this to handle full state returns
+            convTemp = Array{Array{Bool,1},1}(undef, length(OptResults.results.clxOpt))
+            errTemp = Array{Array{Float64,1},1}(undef, length(OptResults.results.clxOpt))
+        else
+            convTemp = Array{Bool,1}(undef, length(OptResults.results.clxOpt))
+            errTemp = Array{Float64,1}(undef, length(OptResults.results.clxOpt))
+        end
+
+        # replace this with function
+        for j = 1:length(OptResults.results.clxOpt)
+
+            convTemp[j], errTemp[j] = _checkStateConvergence(OptResults.results.clxOpt[j], OptResults.trueState, any(OptResults.options.algorithm .== (:MPSO_full_state)), attitudeThreshold, angVelThreshold)
+
+        end
+        # need to fix this to handle att + angvel
+        if any(OptResults.options.algorithm .== (:MPSO_full_state))
+
+            clOptConv = convTemp
+            clOptErr = errTemp
+        else
+
+            minInd = argmin(errTemp)
+            clOptConv = convTemp[minInd]
+            clOptErr = errTemp[minInd]
+        end
+
+        return optConv, optErr, clOptConv, clOptErr
     else
     end
 end
@@ -348,13 +339,6 @@ function visGroupAnalysisFunction(sampleNo,maxIterations,binNo)
     end
 end
 
-function attLMFIM(att,sat,scen,R)
-
-    dhdx = ForwardDiff.jacobian(A -> _Fobs( A, sat.nvecs, sat.uvecs, sat.vvecs, sat.Areas, sat.nu, sat.nv, sat.Rdiff, sat.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, qRotate), att)
-
-    FIM = dhdx'*inv(R)*dhdx
-end
-
 import Base.isassigned
 function isassigned(x1 :: Array{Float64,1}, x2 :: Colon)
 
@@ -486,3 +470,35 @@ end
 #         end
 #         return optConv, optErrAng
 #     end
+
+# if typeof(OptResults.trueState) <: Vec
+#     if size(OptResults.trueState) == (4,)
+#         trueAtt = OptResults.trueState
+#     elseif size(OptResults.trueState) == (3,)
+#         trueAtt = p2q(OptResults.trueState)
+#     elseif size(OptResults.trueState) == (6,)
+#         trueAtt = p2q(OptResults.trueState[1:3])
+#     elseif size(OptResults.trueState) == (7,)
+#         trueAtt = OptResults.trueState[1:4]
+#     end
+# elseif typeof(OptResults.trueState) == quaternion
+#     trueAtt = [OptResults.trueState.v;OptResults.trueState.s]
+# elseif typeof(OptResults.trueState) == DCM
+#     trueAtt = A2q(OptResults.trueState)
+# elseif typeof(OptResults.trueState) == MRP
+#     trueAtt = p2q(OptResults.trueState)
+# elseif typeof(OptResults.trueState) == Array{Array{Float64,2},1}
+#     trueAtt = [A2q(A) for A in OptResults.trueState]
+# elseif typeof(OptResults.trueState) == Array{Array{Float64,1},1}
+#     if size(OptResults.trueState[1]) == (4,)
+#         trueAtt = OptResults.trueState[1]
+#     elseif size(OptResults.trueState[1]) == (3,)
+#         trueAtt = p2q(OptResults.trueState[1])
+#     elseif size(OptResults.trueState[1]) == (6,)
+#         trueAtt = p2q(OptResults.trueState[1][1:3])
+#     elseif size(OptResults.trueState[1]) == (7,)
+#         trueAtt = OptResults.trueState[1][1:4]
+#     end
+# else
+#     error("invalid attitude")
+# end

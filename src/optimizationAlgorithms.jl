@@ -127,6 +127,46 @@ function PSO_LM(trueState :: Vector, LMprob :: LMoptimizationProblem, options ::
         clxOptHistOut = clxOptHist
     end
 
+    if options.GB_cleanup == true
+        opt = Opt(:LD_SLSQP,3)
+
+        tsp = q2p(trueState)
+        if any(abs.(tsp) .> 1)
+            tsp = sMRP(tsp)
+        end
+
+        opt.min_objective = costFuncGenFD(tsp, LMprob)
+        opt.lower_bounds = [-1;-1;-1]
+        opt.upper_bounds = [1;1;1]
+        opt.maxeval = 40
+        opt.maxtime = .05
+
+        clxOpt = clxOptHistOut[end]
+        clfOpt_clean = similar(clfOptHist[end])
+        clxOpt_clean = similar(clxOpt)
+        for i = 1:size(clxOpt,2)
+            xinit = q2p(clxOpt[:,i])
+            if any(abs.(xinit) .> 1)
+                xinit = sMRP(xinit)
+            end
+
+            (minf, minx, ret) = optimize(opt,xinit)
+            clxOpt_clean[:,i] = p2q(minx)
+            clfOpt_clean[i] = minf
+        end
+
+        optInd = argmin(clfOpt_clean)
+        if clfOpt_clean[optInd] < fOpt
+            fOpt = clfOpt_clean[optInd]
+            xOpt = clxOpt_clean[:,optInd]
+        end
+
+        clxOptHistOut[end] = clxOpt_clean
+        clfOptHist[end] = clfOpt_clean
+
+
+    end
+
     # return PSO_results type
     return PSO_results{typeof(xOpt)}(xHist, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt) :: PSO_results
 end
@@ -162,8 +202,10 @@ function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functio
         xHist[1] = deepcopy(x)
         fHist[1] = finit
     else
-        xHist = Array{typeof(x),1}(undef,0)
-        fHist = Array{typeof(finit),1}(undef,0)
+        # xHist = Array{typeof(x),1}(undef,0)
+        # fHist = Array{typeof(finit),1}(undef,0)
+        xHist = nothing
+        fHist = nothing
     end
 
     # Array containing the cluster number associated with each particle
@@ -325,6 +367,90 @@ function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functio
     # return xHist :: VecOfArrayOfVecs,fHist :: ArrayOfVecs, xOptHist :: ArrayOfVecs, fOptHist :: Vector, clxOptHist :: VecOfArrayOfVecs, clfOptHist :: ArrayOfVecs, xOptHist[end] :: Vector, fOptHist[end] :: Float64
 end
 
+# ensemble gradient based light magnitude optimization
+function EGB_LM(trueState :: Vec, LMprob :: LMoptimizationProblem, options :: LMoptimizationOptions)
+
+    params = options.optimizationParams;
+
+    # create the set of attitudes that GB opitimizers are initialized with
+    if options.initMethod == :random
+        # if the user specifies random initialization
+        xinit = randomAtt(params.N, options.Parameterization)
+    elseif options.initMethod == :specified
+        # if the user specifies that they will provide initial values use those initial values
+        xinit = options.initVals
+        if typeof(xinit) <: ArrayOfVecs && length(xinit) == params.N
+        else
+            error("invalid inital state")
+        end
+    else
+        error("Please provide valid particle initialization method")
+    end
+
+    if typeof(xinit) <: Vec && params.N == 1
+        xinit = [xinit]
+    end
+
+
+    # initialize arrays to hold the results from each gradient based optimizer
+    fVec = Array{Float64,1}(undef, params.N)
+    xVec = Array{Array{Float64,1},1}(undef, params.N)
+
+    # generate the optimization structure for the specified parameters
+    opt = Opt(:LD_SLSQP,3)
+    opt.min_objective = costFuncGenFD(trueState, LMprob)
+    opt.lower_bounds = [-1;-1;-1]
+    opt.upper_bounds = [1;1;1]
+    opt.maxeval = options.optimizationParams.maxeval
+    opt.maxtime = options.optimizationParams.maxtime
+
+    # loop through the initial attitudes
+    for i = 1:params.N #Threads.@threads
+
+        # generate the optimization options structure for the specific initial attitude
+        if any(abs.(xinit[i]) .> 1)
+            init = sMRP(xinit[i])
+            if any(init .> 1)
+                @infiltrate
+            end
+        else
+            init = xinit[i]
+        end
+
+        # run the opitmization
+        (f,x,ret) = optimize(opt,init)
+        # (f,x,ret) = GB_main(costFunc, opt_temp)
+        fVec[i] = f
+        xVec[i] = x
+    end
+
+    # find the best solution by CF value and the set of possible best solutions
+    ind = sortperm(fVec)
+    fOpt = fVec[ind[1]]
+    xOpt = xVec[ind[1]]
+    clfOpt = fVec[ind[1:params.ncl]]
+    clxOpt = xVec[ind[1:params.ncl]]
+
+    # create the results structure and return it
+    return EGB_results(fOpt, xOpt, clfOpt, clxOpt)
+end
+
+function GB_main(costFunc, options)
+
+    xinit = options.initVals
+
+    opt = Opt(options.algorithm,3)
+    opt.min_objective = costFunc
+    opt.lower_bounds = [-1;-1;-1]
+    opt.upper_bounds = [1;1;1]
+    opt.maxeval = options.optimizationParams.maxeval
+    opt.maxtime = options.optimizationParams.maxtime
+    opt.local_optimizer = Opt(:LD_SLSQP,3)
+    # @infiltrate
+    (minf :: Float64, minx :: Vector, ret) = optimize(opt,xinit)
+    return minf, minx, ret
+end
+
 function PSO_cluster(x :: Union{Mat,ArrayOfVecs,Array{MRP,1},Array{GRP,1}}, costFunc :: Function, params :: PSO_parameters)
 
     if typeof(x)== Union{Array{MRP,1},Array{GRP,1}}
@@ -423,8 +549,10 @@ function _PSO_cluster(x :: Mat, costFunc :: Function, params :: PSO_parameters)
         xHist = Array{typeof(x),1}(undef,params.tmax)
         fHist = Array{typeof(finit),1}(undef,params.tmax)
     else
-        xHist = Array{typeof(x),1}(undef,0)
-        fHist = Array{typeof(finit),1}(undef,0)
+        # xHist = Array{typeof(x),1}(undef,0)
+        # fHist = Array{typeof(finit),1}(undef,0)
+        xHist = nothing
+        fHist = nothing
     end
 
     clxOptHist = Array{typeof(x),1}(undef,params.tmax)
@@ -520,19 +648,21 @@ function _PSO_cluster(x :: Mat, costFunc :: Function, params :: PSO_parameters)
                 (abs(mean(fOptHist[i-4:i]) - mean(fOptHist[i-9:i-5])) < params.tol) &
                 (fOptHist[i] < params.abstol)
 
-                if params.saveFullHist
-                    return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
-                    clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
-                else
-                    return xHist,fHist,xOptHist[1:i],fOptHist[1:i],
-                    clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
-                end
+                break
             end
         end
 
     end
 
-    return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+    if params.saveFullHist
+        return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
+        clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
+    else
+        return xHist,fHist,xOptHist[1:i],fOptHist[1:i],
+        clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
+    end
+
+    # return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
 end
 
 function _PSO_cluster(x :: ArrayOfVecs, costFunc :: Function, params :: PSO_parameters)
@@ -612,8 +742,10 @@ function _PSO_cluster(x :: ArrayOfVecs, costFunc :: Function, params :: PSO_para
         xHist = Array{typeof(x),1}(undef,params.tmax)
         fHist = Array{typeof(finit),1}(undef,params.tmax)
     else
-        xHist = Array{typeof(x),1}(undef,0)
-        fHist = Array{typeof(finit),1}(undef,0)
+        # xHist = Array{typeof(x),1}(undef,0)
+        # fHist = Array{typeof(finit),1}(undef,0)
+        xHist = nothing
+        fHist = nothing
     end
 
     clxOptHist = Array{typeof(x),1}(undef,params.tmax)
@@ -718,19 +850,20 @@ function _PSO_cluster(x :: ArrayOfVecs, costFunc :: Function, params :: PSO_para
             if (abs(mean(fOptHist[i-9:i] - fOptHist[i-10:i-1])) < params.tol) &
                 (fOptHist[i] < params.abstol)
 
-                if params.saveFullHist
-                    return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
-                    clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
-                else
-                    return xHist,fHist,xOptHist[1:i],fOptHist[1:i],
-                    clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
-                end
+                break
             end
         end
 
     end
 
-    return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+    if params.saveFullHist
+        return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
+        clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
+    else
+        return xHist,fHist,xOptHist[1:i],fOptHist[1:i],
+        clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
+    end
+    # return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
 end
 
 function MPSO_cluster(x :: Union{Array{quaternion,1}, ArrayOfVecs}, costFunc :: Function, clusterFunc :: Function, params :: PSO_parameters)
@@ -869,8 +1002,10 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Fu
         xHist[1] = deepcopy(x)
         fHist[1] = finit
     else
-        xHist = Array{typeof(x),1}(undef,0)
-        fHist = Array{typeof(finit),1}(undef,0)
+        # xHist = Array{typeof(x),1}(undef,0)
+        # fHist = Array{typeof(finit),1}(undef,0)
+        xHist = nothing
+        fHist = nothing
     end
 
     clxOptHist = Array{typeof(x),1}(undef,params.tmax)
@@ -1000,17 +1135,18 @@ function _MPSO_cluster(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Fu
                 (abs(mean(fOptHist[i-4:i]) - mean(fOptHist[i-9:i-5])) < params.tol) &
                 (fOptHist[i] < params.abstol)
 
-                if params.saveFullHist
-                    return xHist[1:i] :: VecOfArrayOfVecs, fHist[1:i] :: ArrayOfVecs, xOptHist[1:i] :: ArrayOfVecs, fOptHist[1:i] :: Vector, clxOptHist[1:i] :: VecOfArrayOfVecs, clfOptHist[1:i] :: ArrayOfVecs, xOptHist[i] :: Vector, fOptHist[i] :: Float64
-                else
-                    return xHist, fHist, xOptHist[1:i] :: ArrayOfVecs, fOptHist[1:i] :: Vector, clxOptHist[1:i] :: VecOfArrayOfVecs, clfOptHist[1:i] :: ArrayOfVecs, xOptHist[i] :: Vector, fOptHist[i] :: Float64
-                end
+                break
             end
         end
 
     end
 
-    return xHist :: VecOfArrayOfVecs,fHist :: ArrayOfVecs, xOptHist :: ArrayOfVecs, fOptHist :: Vector, clxOptHist :: VecOfArrayOfVecs, clfOptHist :: ArrayOfVecs, xOptHist[end] :: Vector, fOptHist[end] :: Float64
+    if params.saveFullHist
+        return xHist[1:i] :: VecOfArrayOfVecs, fHist[1:i] :: ArrayOfVecs, xOptHist[1:i] :: ArrayOfVecs, fOptHist[1:i] :: Vector, clxOptHist[1:i] :: VecOfArrayOfVecs, clfOptHist[1:i] :: ArrayOfVecs, xOptHist[i] :: Vector, fOptHist[i] :: Float64
+    else
+        return xHist, fHist, xOptHist[1:i] :: ArrayOfVecs, fOptHist[1:i] :: Vector, clxOptHist[1:i] :: VecOfArrayOfVecs, clfOptHist[1:i] :: ArrayOfVecs, xOptHist[i] :: Vector, fOptHist[i] :: Float64
+    end
+    # return xHist :: VecOfArrayOfVecs,fHist :: ArrayOfVecs, xOptHist :: ArrayOfVecs, fOptHist :: Vector, clxOptHist :: VecOfArrayOfVecs, clfOptHist :: ArrayOfVecs, xOptHist[end] :: Vector, fOptHist[end] :: Float64
 end
 
 function MPSO_AVC(x :: Union{Array{quaternion,1}, ArrayOfVecs}, costFunc :: Function, clusterFunc :: Function, params :: PSO_parameters)
@@ -1160,8 +1296,10 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
         xHist[1] = deepcopy(x)
         fHist[1] = finit
     else
-        xHist = Array{typeof(x),1}(undef,0)
-        fHist = Array{typeof(finit),1}(undef,0)
+        # xHist = Array{typeof(x),1}(undef,0)
+        # fHist = Array{typeof(finit),1}(undef,0)
+        xHist = nothing
+        fHist = nothing
     end
 
     clxOptHist = Array{typeof(x),1}(undef,params.tmax)
@@ -1285,18 +1423,18 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
                 (abs(mean(fOptHist[i-4:i]) - mean(fOptHist[i-9:i-5])) < params.tol) &
                 (fOptHist[i] < params.abstol)
 
-                if params.saveFullHist
-                    return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
-                    clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
-                else
-                    return xHist, fHist, xOptHist[1:i],fOptHist[1:i], clxOptHist[1:i],clfOptHist[1:i],
-                    xOptHist[i],fOptHist[i]
-                end
+                break
             end
         end
 
     end
 
-
-    return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
+    if params.saveFullHist
+        return xHist[1:i],fHist[1:i],xOptHist[1:i],fOptHist[1:i],
+        clxOptHist[1:i],clfOptHist[1:i],xOptHist[i],fOptHist[i]
+    else
+        return xHist, fHist, xOptHist[1:i],fOptHist[1:i], clxOptHist[1:i],clfOptHist[1:i],
+        xOptHist[i],fOptHist[i]
+    end
+    # return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
 end
