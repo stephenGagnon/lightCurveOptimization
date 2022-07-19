@@ -1,245 +1,17 @@
-function Convert_PSO_results(results :: PSO_results, attType, a = 1,f = 1)
-
-    if typeof(results.xHist) != Nothing
-        xHist = Array{Array{attType,1},1}(undef, length(results.xHist))
-        for i = 1:length(results.xHist)
-            for j = 1:size(results.xHist[1],2)
-                temp = Array{attType,1}(undef,size(results.xHist[1],2))
-                if attType == MRP
-                    temp[j] = MRP(results.xHist[i][:,j])
-                elseif attTpye == GRP
-                    temp[j] = GRP(results.xHist[i][:,j],a,f)
-                elseif attType == quaternion
-                    temp[j] = quaternion(results.xHist[i][:,j])
-                end
-                xHist[i] = temp
-            end
-        end
-    else
-        xHist = results.xHist
-    end
-
-    xOptHist = Array{attType,1}(undef,length(results.xOptHist))
-    for i = 1:length(results.xOptHist)
-        if attType == MRP
-            xOptHist[i] = MRP(results.xOptHist[i])
-        elseif attTpye == GRP
-            xOptHist[i] = GRP(results.xOptHist[i],a,f)
-        elseif attType == quaternion
-            xOptHist[i] = quaternion(results.xOptHist[i])
-        end
-    end
-
-    # clusterxOptHist = Array{attType,1}(undef,length(results.clusterxOptHist))
-    # for i = 1:length(results.clusterxOptHist)
-    #     if attType == MRP
-    #         xOptHist[i] = MRP(results.clusterxOptHist[i])
-    #     elseif attTpye == GRP
-    #         xOptHist[i] = GRP(results.clusterxOptHist[i],a,f)
-    #     elseif attType == quaternion
-    #         xOptHist[i] = quaternion(results.clusterxOptHist[i])
-    #     end
-    # end
-    clusterxOptHist = Array{Array{attType,1},1}(undef, length(results.clusterxOptHist))
-    for i = 1:length(results.clusterxOptHist)
-        for j = 1:size(results.clusterxOptHist[1],2)
-            temp = Array{attType,1}(undef,size(results.clusterxOptHist[1],2))
-            if attType == MRP
-                temp[j] = MRP(results.clusterxOptHist[i][:,j])
-            elseif attTpye == GRP
-                temp[j] = GRP(results.clusterxOptHist[i][:,j],a,f)
-            elseif attType == quaternion
-                temp[j] = quaternion(results.clusterxOptHist[i][:,j])
-            end
-            clusterxOptHist[i] = temp
-        end
-    end
-
-    if attType == MRP
-        xOpt = MRP(results.xOpt)
-    elseif attTpye == GRP
-        xOpt = GRP(results.xOpt,a,f)
-    elseif attType == quaternion
-        xOpt = quaternion(results.xOpt)
-    end
-
-    return PSO_results(xHist,results.fHist,xOptHist,results.fOptHist,clusterxOptHist,
-    results.clusterfOptHist, xOpt,results.fOpt)
-end
-
 function forwardDiffWrapper(func, dim)
-
-    t = Array{Float64,1}(undef,dim)
-    result = DiffResults.GradientResult(t)
+    result = DiffResults.GradientResult(Array{Float64,1}(undef,dim))
     func_out = (x, grad :: Vector) ->
     begin
-        result = ForwardDiff.gradient!(result, func, x)
-        fval = DiffResults.value(result)
         if length(grad) > 0
+            result = ForwardDiff.gradient!(result, func, x)
+            fval = DiffResults.value(result)
             grad[:] = DiffResults.gradient(result)
+        else
+            fval = func(x)
         end
         return fval
     end
     return func_out
-end
-
-function checkConvergence(OptResults; attitudeThreshold = 5, angVelThreshold = .01)
-
-    if typeof(OptResults) == LMoptimizationResults
-
-        return _checkConvergence(OptResults, attitudeThreshold, angVelThreshold)
-
-    elseif typeof(OptResults) == Array{LMoptimizationResults,1}
-
-        if OptResults[1].options.algorithm == :MPSO_full_state
-            optConv =  Array{Array{Bool,1},1}(undef,length(OptResults))
-            clOptConv = Array{Array{Array{Bool,1},1},1}(undef,length(OptResults))
-
-            optErr = Array{Array{Float64,1},1}(undef,length(OptResults))
-            clOptErr = Array{Array{Array{Float64,1},1},1}(undef,length(OptResults))
-        else
-            optConv =  Array{Bool,1}(undef,length(OptResults))
-            clOptConv = Array{Bool,1}(undef,length(OptResults))
-
-            optErr = Array{Float64,1}(undef,length(OptResults))
-            clOptErr = Array{Float64,1}(undef,length(OptResults))
-        end
-
-        for i = 1:length(OptResults)
-
-            (optConv[i], optErr[i], clOptConv[i], clOptErr[i]) = _checkConvergence(OptResults[i], attitudeThreshold, angVelThreshold)
-
-        end
-        return optConv, optErr, clOptConv, clOptErr
-    end
-end
-
-function _checkConvergence(OptResults, attitudeThreshold, angVelThreshold)
-
-    if typeof(OptResults.results) <: PSO_results
-
-        optConv, optErr = _checkStateConvergence(OptResults.results.xOpt, OptResults.trueState, any(OptResults.options.algorithm .== (:MPSO_full_state)), attitudeThreshold, angVelThreshold)
-
-        if any(OptResults.options.algorithm .== (:MPSO_full_state))
-            # change this to handle full state returns
-            convTemp = Array{Array{Bool,1},1}(undef, size(OptResults.results.clusterxOptHist[end],2))
-            errTemp = Array{Array{Float64,1},1}(undef, size(OptResults.results.clusterxOptHist[end],2))
-        else
-            convTemp = Array{Bool,1}(undef, size(OptResults.results.clusterxOptHist[end],2))
-            errTemp = Array{Float64,1}(undef, size(OptResults.results.clusterxOptHist[end],2))
-        end
-
-        # replace this with function
-        for j = 1:size(OptResults.results.clusterxOptHist[end],2)
-
-            convTemp[j], errTemp[j] = _checkStateConvergence(OptResults.results.clusterxOptHist[end][:,j], OptResults.trueState, any(OptResults.options.algorithm .== (:MPSO_full_state)), attitudeThreshold, angVelThreshold)
-
-        end
-        # need to fix this to handle att + angvel
-        if any(OptResults.options.algorithm .== (:MPSO_full_state))
-
-            clOptConv = convTemp
-            clOptErr = errTemp
-        else
-
-            minInd = argmin(errTemp)
-            clOptConv = convTemp[minInd]
-            clOptErr = errTemp[minInd]
-        end
-
-        return optConv, optErr, clOptConv, clOptErr
-
-    elseif typeof(OptResults.results) <: GB_results
-        return  _checkAttConvergence(OptResults.results.xOpt, OptResults.trueState, attitudeThreshold)
-
-    elseif typeof(OptResults.results) <: EGB_results
-
-        optConv, optErr = _checkStateConvergence(OptResults.results.xOpt, OptResults.trueState, any(OptResults.options.algorithm .== (:MPSO_full_state)), attitudeThreshold, angVelThreshold)
-
-        if any(OptResults.options.algorithm .== (:MPSO_full_state))
-            # change this to handle full state returns
-            convTemp = Array{Array{Bool,1},1}(undef, length(OptResults.results.clxOpt))
-            errTemp = Array{Array{Float64,1},1}(undef, length(OptResults.results.clxOpt))
-        else
-            convTemp = Array{Bool,1}(undef, length(OptResults.results.clxOpt))
-            errTemp = Array{Float64,1}(undef, length(OptResults.results.clxOpt))
-        end
-
-        # replace this with function
-        for j = 1:length(OptResults.results.clxOpt)
-
-            convTemp[j], errTemp[j] = _checkStateConvergence(OptResults.results.clxOpt[j], OptResults.trueState, any(OptResults.options.algorithm .== (:MPSO_full_state)), attitudeThreshold, angVelThreshold)
-
-        end
-        # need to fix this to handle att + angvel
-        if any(OptResults.options.algorithm .== (:MPSO_full_state))
-
-            clOptConv = convTemp
-            clOptErr = errTemp
-        else
-
-            minInd = argmin(errTemp)
-            clOptConv = convTemp[minInd]
-            clOptErr = errTemp[minInd]
-        end
-
-        return optConv, optErr, clOptConv, clOptErr
-    else
-    end
-end
-
-function _checkStateConvergence(xOpt, trueState, isFullState, attitudeThreshold, angVelThreshold)
-
-    if isFullState
-        (optConvA, optErrA) =
-         _checkAttConvergence(xOpt[1:end-3], trueState[1:end-3], attitudeThreshold)
-
-        #check convergence of angular velocity components
-        w_true = trueState[end-2:end]
-        w_opt = xOpt[end-2:end]
-        optErrW = norm(w_true-w_opt)
-        optConvW = optErrW < angVelThreshold
-        return [optConvA; optConvW],  [optErrA; optErrW]
-    else
-        return _checkAttConvergence(xOpt, trueState, attitudeThreshold)
-    end
-
-end
-
-function _checkAttConvergence(AOpt :: Union{quaternion,DCM,MRP,GRP}, trueState :: Vec, attitudeThreshold)
-
-    if typeof(AOpt) == quaternion
-        qOpt = AOpt
-    elseif typeof(AOpt) == DCM
-        qOpt = A2q(AOpt)
-    elseif (typeof(AOpt) == MRP) | (typeof(AOpt) == GRP)
-        qOpt = p2q(AOpt)
-    end
-
-    q = Array{Float64,1}(undef,4)
-    q[1:3] = qOpt.v
-    q[4] = qOpt.s
-    return _checkAttConvergence(q, trueState, attitudeThreshold = 5)
-end
-
-function _checkAttConvergence(qOpt_in :: Vec, trueState :: Vec, attitudeThreshold)
-
-    if size(trueState) == (4,)
-        trueAtt = trueState
-    elseif size(trueState) == (3,)
-        trueAtt = p2q(trueState)
-    end
-
-    if length(qOpt_in) == 4
-        qOpt = qOpt_in
-    elseif length(qOpt_in) == 3
-        qOpt = p2q(qOpt_in)
-    end
-
-    optErrVec = attitudeErrors(trueAtt,qOpt)
-    optErrAng = norm(optErrVec)*180/pi
-    optConv = optErrAng < attitudeThreshold
-    return optConv, optErrAng
 end
 
 # in progress
@@ -268,24 +40,6 @@ function plotOptResults(results, qtrue, a=1, f=1)
 
 
     return errors
-end
-
-function kmeans(x :: Union{Array{MRP,1},Array{GRP,1}}, ncl)
-
-    temp = Array{Float64,2}(undef,3,length(x))
-    for i = 1:length(x)
-        temp[:,i] = x[i].p
-    end
-    return kmeans(temp,ncl)
-end
-
-function kmeans(x :: ArrayOfVecs, ncl)
-
-    temp = Array{Float64,2}(undef,length(x[1]),length(x))
-    for i = 1:length(x)
-        temp[:,i] = x[i]
-    end
-    return kmeans(temp,ncl)
 end
 
 function visGroupAnalysisFunction(sampleNo,maxIterations,binNo)
@@ -363,142 +117,34 @@ function isassigned(x1 :: Array{Array{Float64,1},1}, x2 :: Colon)
     return out
 end
 
-function normVecClustering(x :: ArrayOfVecs, ind :: Vector{Int64}, sat :: targetObject, scen :: spaceScenario, rotFunc :: Function)
-
-    nvecs = unique(sat.nvecs)
-    dvals = Array{Array{typeof(scen.sunVec[1]),1},1}(undef,length(nvecs))
-    hvecs = Array{Array{typeof(scen.sunVec[1]),1},1}(undef,length(scen.obsVecs))
-    temp = Array{typeof(scen.sunVec[1]),1}(undef,length(scen.obsVecs))
-
-    for i = 1:length(x)
-
-        (sunVec :: Vec, obsVecs :: ArrayOfVecs) = _toBodyFrame(x[i],scen.sunVec,scen.obsVecs,rotFunc)
-
-        for j = 1:length(obsVecs)
-            hvecs[j] = (sunVec + obsVecs[j])./norm(sunVec + obsVecs[j])
-        end
-
-        for j = 1:length(nvecs)
-            for k = 1:length(hvecs)
-                temp[k] = dot(hvecs[k],nvecs[j])
-            end
-            dvals[j] = copy(temp)
-        end
-        # @infiltrate
-        # error()
-        ind[i] = argmin(norm.(dvals))
-
-    end
-end
-
 function PSOconvergenceCheck(f, tol, abstol)
     return (abs(f[end]-f[end-1]) < tol) &
         (abs(mean(f[end-4:end]) - mean(f[end-9:end-5])) < tol) &
         (f[end] < abstol)
 end
 
-# macro tryinfiltrate(expr)
-#     try
-#         expr
-#     catch
-#         @infiltrate
-#         error()
-#     end
-# end
-# if typeof(OptResults) == Array{PSO_results,1}
-#     optConv = Array{Bool,1}(undef,length(OptResults.results))
-#     optErrAng = Array{Float64,1}(undef,length(OptResults.results))
-#     clOptConv = Array{Bool,1}(undef,length(OptResults.results))
-#     clOptErrAng = Array{Float64,1}(undef,length(OptResults.results))
-#
-#     if typeof(trueState) == Array{Array{Float64,1},1}
-#         for i = 1:length(OptResults.results)
-#             (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
-#              trueState[i], attitudeThreshold = 5)
-#
-#              convTemp = Array{Bool,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-#              errAngTemp = Array{Float64,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-#
-#             for j = 1:size(OptResults.results[i].clusterxOptHist[end],2)
-#
-#                 convTemp[j], errAngTemp[j] =
-#                  _checkConvergence(OptResults.results[i].clusterxOptHist[end][:,j],
-#                  trueState[i], attitudeThreshold = 5)
-#             end
-#
-#             minInd = argmin(errAngTemp)
-#             clOptConv[i] = convTemp[minInd]
-#             clOptErrAng[i] = errAngTemp[minInd]
-#         end
-#
-#         return optConv, optErrAng, clOptConv, clOptErrAng
-#     elseif typeof(trueState) == Array{Float64,1}
-#         for i = 1:length(OptResults.results)
-#             (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
-#              trueState, attitudeThreshold = 5)
-#
-#             convTemp = Array{Bool,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-#             errAngTemp = Array{Float64,1}(undef,size(OptResults.results[i].clusterxOptHist[end],2))
-#
-#             for j = 1:size(OptResults.results[i].clusterxOptHist[end],2)
-#
-#                 convTemp[j], errAngTemp[j] =
-#                  _checkConvergence(OptResults.results[i].clusterxOptHist[end][:,j],
-#                  trueState, attitudeThreshold = 5)
-#             end
-#
-#             minInd = argmin(errAngTemp)
-#             clOptConv[i] = convTemp[minInd]
-#             clOptErrAng[i] = errAngTemp[minInd]
-#         end
-#         return optConv, optErrAng, clOptConv, clOptErrAng
-#     end
-# elseif typeof(OptResults.results) == Array{GB_results,1}
-#     optConv = Array{Bool,1}(undef,length(OptResults.results))
-#     optErrAng = Array{Float64,1}(undef,length(OptResults.results))
-#
-#     if typeof(trueState) == Array{Array{Float64,1},1}
-#         for i = 1:length(OptResults.results)
-#             (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
-#              trueState[i], attitudeThreshold = 5)
-#         end
-#         return optConv, optErrAng
-#     elseif typeof(trueState) == Array{Float64,1}
-#         for i = 1:length(results)
-#             (optConv[i], optErrAng[i]) = _checkConvergence(OptResults.results[i].xOpt,
-#              trueState, attitudeThreshold = 5)
-#         end
-#         return optConv, optErrAng
-#     end
+function boundFunction(x :: AbstractVector{T}, bound :: T) where {T}
+    if norm(x) > bound
+        x = x.*(bound/norm(x))
+    end
+    return x
+end
 
-# if typeof(OptResults.trueState) <: Vec
-#     if size(OptResults.trueState) == (4,)
-#         trueAtt = OptResults.trueState
-#     elseif size(OptResults.trueState) == (3,)
-#         trueAtt = p2q(OptResults.trueState)
-#     elseif size(OptResults.trueState) == (6,)
-#         trueAtt = p2q(OptResults.trueState[1:3])
-#     elseif size(OptResults.trueState) == (7,)
-#         trueAtt = OptResults.trueState[1:4]
-#     end
-# elseif typeof(OptResults.trueState) == quaternion
-#     trueAtt = [OptResults.trueState.v;OptResults.trueState.s]
-# elseif typeof(OptResults.trueState) == DCM
-#     trueAtt = A2q(OptResults.trueState)
-# elseif typeof(OptResults.trueState) == MRP
-#     trueAtt = p2q(OptResults.trueState)
-# elseif typeof(OptResults.trueState) == Array{Array{Float64,2},1}
-#     trueAtt = [A2q(A) for A in OptResults.trueState]
-# elseif typeof(OptResults.trueState) == Array{Array{Float64,1},1}
-#     if size(OptResults.trueState[1]) == (4,)
-#         trueAtt = OptResults.trueState[1]
-#     elseif size(OptResults.trueState[1]) == (3,)
-#         trueAtt = p2q(OptResults.trueState[1])
-#     elseif size(OptResults.trueState[1]) == (6,)
-#         trueAtt = p2q(OptResults.trueState[1][1:3])
-#     elseif size(OptResults.trueState[1]) == (7,)
-#         trueAtt = OptResults.trueState[1][1:4]
-#     end
-# else
-#     error("invalid attitude")
-# end
+function boundFunction(x :: AbstractVector{T}, bounds :: AbstractVector{T}) where {T}
+    for i = 1:length(x)
+        if x[i] > bound[i]
+            x[i] = bound[i]
+        end
+    end
+    return x
+end
+
+function boundFunciton(x , bound :: Nothing)
+    return x
+end
+
+function fullStateBoundFunction(x :: AbstractVector, attBound, angVelBound)
+    x[1:end-3] = boundFunction(x[1:end-3], attBound)
+    x[end-2:end] = boundFunction(x[end-2:end], angVelBound)
+    return x
+end

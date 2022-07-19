@@ -101,13 +101,17 @@ struct LMoptimizationProblem
     # time between measurements if multiple sequential measurements are used for full state estimation
     dt :: Float64
     #upper bound on angular velocity
-    angularVelocityBound :: Float64
+    angularVelocityBound :: Union{Float64, Vector{Float64}, Nothing}
+    # attitude bounds
+    attitudeBound :: Union{Float64, Vector{Float64}, Nothing}
     # structure containg data about target object necessary to compute reflected light intensity e.g. facet normal vectors and material properties. See lightCurveModeling package for more details
     object :: targetObject
     # structure containing all the information in the object structure in addition to some more data for generating plots/renders of the object
     objectFullData :: targetObjectFull
     # structure containing data about the locations and properties of light sources and observers. See lightCurveModeling package for more details
     scenario :: spaceScenario
+    #boolean to determine if the full attitude state is considered (alternative is just the attitude)
+    fullState :: Bool
     # boolean that is true if the problem has constraints
     isConstrained :: Bool
     # function that returns the value of the constraint for a given state
@@ -124,7 +128,7 @@ struct LMoptimizationProblem
     a :: Float64
     f :: Float64
 
-    function LMoptimizationProblem(;dt = .1, angularVelocityBound = 3.0, object = targetObject(), objectFullData = targetObjectFull(), scenario = spaceScenario(), isConstrained = false, constraintFunction = (x) -> 0, delta = 1e-50, noise = false, mean = 0, std = 1e-15, a = 1, f = 1)
+    function LMoptimizationProblem(;dt = .1, angularVelocityBound = 3.0, attitudeBound = 1.0, object = targetObject(), objectFullData = targetObjectFull(), scenario = spaceScenario(), fullState = false, isConstrained = false, constraintFunction = (x) -> 0, delta = 1e-50, noise = false, mean = 0, std = 1e-15, a = 1, f = 1)
 
         if !isdefined(object,2)
             obj, objf = simpleSatellite()
@@ -138,11 +142,11 @@ struct LMoptimizationProblem
             scenario = simpleScenario()
         end
 
-        new(dt, angularVelocityBound, object, objectFullData, scenario, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
+        new(dt, angularVelocityBound, attitudeBound, object, objectFullData, scenario, fullState, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
     end
 
-    function LMoptimizationProblem(dt, angularVelocityBound, object, objectFullData, scenario, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
-        new(dt, angularVelocityBound, object, objectFullData, scenario, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
+    function LMoptimizationProblem(dt, angularVelocityBound, attitudeBound, object, objectFullData, scenario, fullState, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
+        new(dt, angularVelocityBound, attitudeBound, object, objectFullData, scenario, fullState, isConstrained, constraintFunction, delta, noise, mean, std, a, f)
     end
 end
 

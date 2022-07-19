@@ -3,12 +3,10 @@ function PSO_LM(trueState :: Vector, LMprob :: LMoptimizationProblem, options ::
     # x :: Union{Mat,ArrayOfVecs,Array{MRP,1},Array{GRP,1}}, costFunc :: Function, params :: PSO_parameters, clusteringType :: Symbol, dynamicsType :: Symbol
 
     #construct cost function
-    if any(options.algorithm .== (:MPSO_full_state))
-        costFunc = costFuncGenPSO_full_state(trueState, LMprob)
-    elseif any(options.algorithm .== (:MPSO_AVC))
-        costFunc = costFuncGenPSO(trueState, LMprob, options.Parameterization, true)
+    if any(options.algorithm .== (:MPSO_AVC))
+        costFunc = costFuncGenPSO(trueState, LMprob, options.optimizationParams.N, options.Parameterization, true, options.vectorize)
     else
-        costFunc = costFuncGenPSO(trueState, LMprob, options.Parameterization, false)
+        costFunc = costFuncGen(trueState, LMprob, options.Parameterization, false)
     end
 
     # generate initial particle distribution #### needs to be updated for full state
@@ -16,7 +14,7 @@ function PSO_LM(trueState :: Vector, LMprob :: LMoptimizationProblem, options ::
         # random attitudes
         attinit = randomAtt(options.optimizationParams.N, options.Parameterization)
 
-        if any(options.algorithm .== (:MPSO_full_state))
+        if LMprob.fullState
             w_init = randomBoundedAngularVelocity(options.optimizationParams.N, LMprob.angularVelocityBound)
 
             xinit = [[attinit[i];w_init[i]] for i in 1:length(attinit)]
@@ -55,12 +53,14 @@ function PSO_LM(trueState :: Vector, LMprob :: LMoptimizationProblem, options ::
         particleDynamics = (x,v,a,Plx,Pgx,opt) -> (x, v) = PSO_particle_dynamics(x, v, a, Plx, Pgx, opt)
 
     elseif any(options.algorithm .== (:MPSO, :MPSO_AVC))
-        # modified multiplicative particle dynamics where particles are propogated via attitude dynamcis
-        particleDynamics = (x,v,a,Plx,Pgx,opt) -> (x, v) = MPSO_particle_dynamics(x, v, a, Plx, Pgx, opt)
 
-    elseif any(options.algorithm .== (:MPSO_full_state))
-        # modified multiplicative particle dynamics where the attitude portion of the particles are propogated via attitude dynamcis, and the velocity portion are propgated by additive particle dynamics
-        particleDynamics = (x,v,a,Plx,Pgx,opt) -> (x, v) = MPSO_particle_dynamics_full_state(x, v, a, Plx, Pgx, opt)
+        if LMprob.fullState
+            # modified multiplicative particle dynamics where the attitude portion of the particles are propogated via attitude dynamcis, and the velocity portion are propgated by additive particle dynamics
+            particleDynamics = (x,v,a,Plx,Pgx,opt) -> (x, v) = MPSO_particle_dynamics_full_state(x, v, a, Plx, Pgx, opt)
+        else
+            # modified multiplicative particle dynamics where particles are propogated via attitude dynamcis
+            particleDynamics = (x,v,a,Plx,Pgx,opt) -> (x, v) = MPSO_particle_dynamics(x, v, a, Plx, Pgx, opt)
+        end
 
     else
         error("Please Provide a valid optimization algorithm")
@@ -110,8 +110,15 @@ function PSO_LM(trueState :: Vector, LMprob :: LMoptimizationProblem, options ::
         error("Invalid Clustering Type. Options are: kmeans, kmedoids, and visbilityGroups")
     end
 
+    # create bounding function
+    if LMprob.fullState
+        boundFunc = (x) -> x_out = fullStateBoundFunction(x , LMprob.attitudeBound, LMprob.angularVelocityBound)
+    else
+        boundFunc = (x) -> x_out = boundFunction(x , LMprob.attitudeBound)
+    end
+
     # run optimization
-    xHist, fHist, xOptHist, fOptHist, clxOptHist, clfOptHist, xOpt, fOpt = PSO_main(xinit, costFunc, clusterFunc, particleDynamics, options.optimizationParams, (f) -> PSOconvergenceCheck(f, options.tol, options.abstol), options.saveFullHist)
+    xHist, fHist, xOptHist, fOptHist, clxOptHist, clfOptHist, xOpt, fOpt = PSO_main(xinit, costFunc, clusterFunc, particleDynamics, options.optimizationParams, (f) -> PSOconvergenceCheck(f, options.tol, options.abstol), boundFunc, options.saveFullHist)
 
     # post processing: transform outputs into appropriate format
     if typeof(clxOptHist) == Array{Array{Array{Float64,1},1},1}
@@ -128,58 +135,49 @@ function PSO_LM(trueState :: Vector, LMprob :: LMoptimizationProblem, options ::
     end
 
     if options.GB_cleanup == true
-        opt = Opt(:LD_SLSQP,3)
 
-        tsp = q2p(trueState)
-        if any(abs.(tsp) .> 1)
-            tsp = sMRP(tsp)
-        end
+        # run gradient based optimization on each of the cluster best solutions
+        (clxOpt_clean, clfOpt_clean) = _GBcleanup(trueState, LMprob, options, clxOptHistOut[end], clfOptHist[end], :LD_SLSQP, 100, .01)
 
-        opt.min_objective = costFuncGenFD(tsp, LMprob)
-        opt.lower_bounds = [-1;-1;-1]
-        opt.upper_bounds = [1;1;1]
-        opt.maxeval = 40
-        opt.maxtime = .05
-
-        clxOpt = clxOptHistOut[end]
-        clfOpt_clean = similar(clfOptHist[end])
-        clxOpt_clean = similar(clxOpt)
-        for i = 1:size(clxOpt,2)
-            xinit = q2p(clxOpt[:,i])
-            if any(abs.(xinit) .> 1)
-                xinit = sMRP(xinit)
+        # if the best solution after the GB optimization is better than the previous best solutions, replace it
+        # optInd = argmin(clfOpt_clean)
+        # if clfOpt_clean[optInd] < fOpt
+        #     fOpt = clfOpt_clean[optInd]
+        #     xOpt = clxOpt_clean[:,optInd]
+        # end
+        for i = 1:size(clxOpt_clean,2)
+            if fOpt > clfOpt_clean[i]
+                fOpt = clfOpt_clean[i]
+                xOpt = clxOpt_clean[:,i]
             end
-
-            (minf, minx, ret) = optimize(opt,xinit)
-            clxOpt_clean[:,i] = p2q(minx)
-            clfOpt_clean[i] = minf
+            if clfOptHist[end][i] > clfOpt_clean[i]
+                clfOptHist[end][i] = clfOpt_clean[i]
+                clxOptHistOut[end][:,i] = clxOpt_clean[:,i]
+            end
         end
-
-        optInd = argmin(clfOpt_clean)
-        if clfOpt_clean[optInd] < fOpt
-            fOpt = clfOpt_clean[optInd]
-            xOpt = clxOpt_clean[:,optInd]
-        end
-
-        clxOptHistOut[end] = clxOpt_clean
-        clfOptHist[end] = clfOpt_clean
-
-
+        # store the optimized solutions
+        # clxOptHistOut[end] = clxOpt_clean
+        # clfOptHist[end] = clfOpt_clean
     end
 
     # return PSO_results type
     return PSO_results{typeof(xOpt)}(xHist, fHist, xOptHist, fOptHist, clxOptHistOut, clfOptHist, xOpt, fOpt) :: PSO_results
 end
 
-function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Function, particleDynamics :: Function, params :: PSO_parameters, convCheck :: Function, saveFullHist = false)
+function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Function, particleDynamics :: Function, params :: PSO_parameters, convCheck :: Function, boundFunc :: Function, saveFullHist = false)
 
     # get the objective function values of the inital population
-    finit = costFunc(x)
+    f = Array{typeof(x[1][1]),1}(undef,params.N)
+    for i = 1:params.N
+        f[i] = costFunc(x[i])
+    end
 
     # initialize variables
     # intialize best local optima in each cluster
     xopt = Array{typeof(x[1]),1}(undef,params.N)
     fopt = Array{Float64,1}(undef,params.N)
+
+
 
     # initialize an array which contains the cluster number associated with each particle
     clmap = Array{Int64,1}(undef,params.N)
@@ -188,19 +186,19 @@ function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functio
 
     # arrays containing history of cluster best solutions and associated cost function values
     clxOptHist = Array{typeof(x),1}(undef,params.tmax)
-    clfOptHist = Array{typeof(finit),1}(undef,params.tmax)
+    clfOptHist = Array{typeof(f),1}(undef,params.tmax)
 
     # arrays to store the history of signle best solutions by cost function value
     xOptHist = Array{typeof(x[1]),1}(undef,params.tmax)
-    fOptHist = Array{typeof(finit[1]),1}(undef,params.tmax)
+    fOptHist = Array{typeof(f[1]),1}(undef,params.tmax)
 
     # initialize arrays to save the entire particle history (can be turned off by user using saveFullHist variable)
     if saveFullHist
         # initalize particle and objective histories
         xHist = Array{typeof(x),1}(undef,params.tmax)
-        fHist = Array{typeof(finit),1}(undef,params.tmax)
+        fHist = Array{typeof(f),1}(undef,params.tmax)
         xHist[1] = deepcopy(x)
-        fHist[1] = finit
+        fHist[1] = deepcopy(f)
     else
         # xHist = Array{typeof(x),1}(undef,0)
         # fHist = Array{typeof(finit),1}(undef,0)
@@ -218,9 +216,12 @@ function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functio
     # create time vector for cooling and population reduction schedules
     t = LinRange(0,1,params.tmax)
 
+
+    Plx = similar(x)
+    PLf = similar(f)
     # initialize the local best for each particle as its inital value
     Plx = deepcopy(x)
-    Plf = finit
+    Plf = deepcopy(f)
 
     # initilize global bests
     Pgx = similar(Plx)
@@ -266,11 +267,11 @@ function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functio
     # store the best solution from the initial iteration
     optInd = argmin(fopt[1:length(cl)])
     xOptHist[1] = deepcopy(xopt[optInd])
-    fOptHist[1] = fopt[optInd]
+    fOptHist[1] = deepcopy(fopt[optInd])
 
     # store the best solutions for each cluster from the initial iteration
     clxOptHist[1] = deepcopy(xopt[1:Ncl])
-    clfOptHist[1] = fopt[1:Ncl]
+    clfOptHist[1] = deepcopy(fopt[1:Ncl])
 
     # particle velocities initialized to zero
     for i = 1:length(x)
@@ -290,22 +291,29 @@ function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functio
         # calculate epsilon using the schedule
         epsilon = params.evec[1] - t[i]*(params.evec[1] - params.evec[2])
 
+        # propagate the  particles forward one iteration using the particle dynamics
         x, w = particleDynamics(x, w, a, Plx, Pgx, params)
 
+        # apply the bounding function to the particles to ensure they fall within the bounds
+        x = boundFunc.(x)
+
         # evalue the objective function for each particle
-        f = costFunc(x)
+        for i = 1:params.N
+            f[i] = costFunc(x[i])
+        end
 
         if saveFullHist
             # store the current particle population
             xHist[i] = deepcopy(x)
             # store the objective values for the current generation
-            fHist[i] = f
+            fHist[i] = deepcopy(f)
         end
 
         # update Plx: the local best for each particle
         indl = findall(f .< Plf)
+
         Plx[indl] = deepcopy(x[indl])
-        Plf[indl] = f[indl]
+        Plf[indl] = deepcopy(f[indl])
 
 
         # on the appropriate iterations, update the clusters
@@ -342,10 +350,10 @@ function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functio
         # store the best solution from the current iteration
         optInd = argmin(fopt[1:Ncl])
         xOptHist[i] = deepcopy(xopt[optInd])
-        fOptHist[i] = fopt[optInd]
+        fOptHist[i] = deepcopy(fopt[optInd])
 
         clxOptHist[i] = deepcopy(xopt[1:Ncl])
-        clfOptHist[i] = fopt[1:Ncl]
+        clfOptHist[i] = deepcopy(fopt[1:Ncl])
 
         if i>10
             if convCheck(view(fOptHist,i-9:i))
@@ -368,39 +376,63 @@ function PSO_main(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functio
 end
 
 # ensemble gradient based light magnitude optimization
+# assumes MRPs, needs to be modified to accomadate arbitrary parameterizations
 function EGB_LM(trueState :: Vec, LMprob :: LMoptimizationProblem, options :: LMoptimizationOptions)
 
     params = options.optimizationParams;
 
-    # create the set of attitudes that GB opitimizers are initialized with
+    # generate initial particle distribution #### needs to be updated for full state
     if options.initMethod == :random
-        # if the user specifies random initialization
-        xinit = randomAtt(params.N, options.Parameterization)
-    elseif options.initMethod == :specified
-        # if the user specifies that they will provide initial values use those initial values
-        xinit = options.initVals
-        if typeof(xinit) <: ArrayOfVecs && length(xinit) == params.N
+        # random attitudes
+        attinit = randomAtt(options.optimizationParams.N, options.Parameterization)
+
+        if LMprob.fullState
+            w_init = randomBoundedAngularVelocity(options.optimizationParams.N, LMprob.angularVelocityBound)
+
+            xinit = [[attinit[i];w_init[i]] for i in 1:length(attinit)]
         else
-            error("invalid inital state")
+            xinit = attinit
         end
+
+    elseif options.initMethod == :specified
+        x = options.initVals
+        # preprocess initial particles to handle custom attitude types
+        if typeof(x)== Union{Array{MRP,1},Array{GRP,1}}
+            xinit = Array{Array{Float64,1},1}(undef,length(x))
+            for i = 1:length(x)
+                xinit[i] = x[i].p
+            end
+        elseif typeof(x) == Array{quaternion,1}
+            xinit = Array{Array{Float64,1},1}(undef,length(x))
+            for i = 1:length(x)
+                q = zeros(4,)
+                q[1:3] = x[i].v
+                q[4] = x[i].s
+                xinit[i] = q
+            end
+        else
+            xinit = x
+        end
+
     else
         error("Please provide valid particle initialization method")
     end
-
-    if typeof(xinit) <: Vec && params.N == 1
-        xinit = [xinit]
-    end
-
-
     # initialize arrays to hold the results from each gradient based optimizer
     fVec = Array{Float64,1}(undef, params.N)
     xVec = Array{Array{Float64,1},1}(undef, params.N)
 
     # generate the optimization structure for the specified parameters
-    opt = Opt(:LD_SLSQP,3)
-    opt.min_objective = costFuncGenFD(trueState, LMprob)
-    opt.lower_bounds = [-1;-1;-1]
-    opt.upper_bounds = [1;1;1]
+    opt = Opt(:LD_SLSQP,length(trueState))
+    opt.min_objective = costFuncGen(trueState, LMprob, MRP, true)
+
+    if LMprob.fullState
+        opt.upper_bounds = vcat(ones(3), 1.2*LMprob.angularVelocityBound.*ones(3))
+        opt.lower_bounds = -1 .* opt.upper_bounds
+    else
+        opt.upper_bounds = ones(3)
+        opt.lower_bounds = -1 .* opt.upper_bounds
+    end
+
     opt.maxeval = options.optimizationParams.maxeval
     opt.maxtime = options.optimizationParams.maxtime
 
@@ -408,28 +440,33 @@ function EGB_LM(trueState :: Vec, LMprob :: LMoptimizationProblem, options :: LM
     for i = 1:params.N #Threads.@threads
 
         # generate the optimization options structure for the specific initial attitude
-        if any(abs.(xinit[i]) .> 1)
-            init = sMRP(xinit[i])
-            if any(init .> 1)
-                @infiltrate
+        if LMprob.fullState
+            if norm(xinit[i][1:3]) > 1
+                init = deepcopy(xinit[i])
+                init[1:3] = sMRP(xinit[i][1:3])
+            else
+                init = xinit[i]
             end
         else
-            init = xinit[i]
+            if norm(xinit[i]) > 1
+                init = sMRP(xinit[i])
+            else
+                init = xinit[i]
+            end
         end
-
         # run the opitmization
         (f,x,ret) = optimize(opt,init)
         # (f,x,ret) = GB_main(costFunc, opt_temp)
-        fVec[i] = f
-        xVec[i] = x
+        fVec[i] = deepcopy(f)
+        xVec[i] = deepcopy(x)
     end
 
     # find the best solution by CF value and the set of possible best solutions
     ind = sortperm(fVec)
-    fOpt = fVec[ind[1]]
-    xOpt = xVec[ind[1]]
-    clfOpt = fVec[ind[1:params.ncl]]
-    clxOpt = xVec[ind[1:params.ncl]]
+    fOpt = deepcopy(fVec[ind[1]])
+    xOpt = deepcopy(xVec[ind[1]])
+    clfOpt = deepcopy(fVec[ind[1:params.ncl]])
+    clxOpt = deepcopy(xVec[ind[1:params.ncl]])
 
     # create the results structure and return it
     return EGB_results(fOpt, xOpt, clfOpt, clxOpt)
@@ -439,13 +476,13 @@ function GB_main(costFunc, options)
 
     xinit = options.initVals
 
-    opt = Opt(options.algorithm,3)
+    opt = Opt(options.algorithm,length(xinit))
     opt.min_objective = costFunc
-    opt.lower_bounds = [-1;-1;-1]
-    opt.upper_bounds = [1;1;1]
+    opt.upper_bounds = vcat(ones(length(xinit)-3), LMprob.angularVelocityBound.*ones(3))
+    opt.lower_bounds = -1 .* opt.upper_bounds
     opt.maxeval = options.optimizationParams.maxeval
     opt.maxtime = options.optimizationParams.maxtime
-    opt.local_optimizer = Opt(:LD_SLSQP,3)
+    opt.local_optimizer = Opt(:LD_SLSQP,length(xinit))
     # @infiltrate
     (minf :: Float64, minx :: Vector, ret) = optimize(opt,xinit)
     return minf, minx, ret
@@ -1438,3 +1475,12 @@ function _MPSO_AVC(x :: ArrayOfVecs, costFunc :: Function, clusterFunc :: Functi
     end
     # return xHist,fHist,xOptHist,fOptHist,clxOptHist,clfOptHist,xOptHist[end],fOptHist[end]
 end
+
+
+# if any(options.algorithm .== (:MPSO_full_state))
+#     costFunc = costFuncGenPSO_full_state(trueState, LMprob)
+# elseif any(options.algorithm .== (:MPSO_AVC))
+#     costFunc = costFuncGenPSO(trueState, LMprob, options.Parameterization, true)
+# else
+#     costFunc = costFuncGenPSO(trueState, LMprob, options.Parameterization, false)
+# end
