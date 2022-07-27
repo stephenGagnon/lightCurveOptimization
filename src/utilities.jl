@@ -3,6 +3,7 @@ function forwardDiffWrapper(func, dim)
     func_out = (x, grad :: Vector) ->
     begin
         if length(grad) > 0
+            # @infiltrate
             result = ForwardDiff.gradient!(result, func, x)
             fval = DiffResults.value(result)
             grad[:] = DiffResults.gradient(result)
@@ -125,7 +126,9 @@ end
 
 function boundFunction(x :: AbstractVector{T}, bound :: T) where {T}
     if norm(x) > bound
-        x = x.*(bound/norm(x))
+        for i = 1:length(x)
+            x[i] = x[i]*(bound/norm(x))
+        end
     end
     return x
 end

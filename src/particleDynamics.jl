@@ -1,4 +1,4 @@
-function PSO_particle_dynamics(x :: ArrayOfVecs, v, a, Plx, Pgx, opt)
+function PSO_particle_dynamics(x :: Array{Array{Float64,1},1}, v, a, Plx, Pgx, opt)
     # loop through particles
     for k = 1:length(x)
         # generate random weights
@@ -20,7 +20,7 @@ function PSO_particle_dynamics(x :: ArrayOfVecs, v, a, Plx, Pgx, opt)
     return x, v
 end
 
-function MPSO_particle_dynamics(x :: ArrayOfVecs, w, a, Plx, Pgx, opt)
+function MPSO_particle_dynamics(x :: Array{Array{Float64,1},1}, w, a, Plx, Pgx, opt)
 
     for j = 1:length(x)
         r = rand(1,2)
@@ -44,7 +44,7 @@ function MPSO_particle_dynamics(x :: ArrayOfVecs, w, a, Plx, Pgx, opt)
     return x, w
 end
 
-function MPSO_particle_dynamics_full_state(x :: ArrayOfVecs, w, a, Plx, Pgx, opt)
+function MPSO_particle_dynamics_full_state(x :: Array{Array{Float64,1},1}, w :: Array{Array{Float64,1},1}, a :: Float64, Plx :: Array{Array{Float64,1},1}, Pgx :: Array{Array{Float64,1},1}, bl :: Float64, bg :: Float64, wl = Vector{Float64,1}(undef,3) :: Vector{Float64,1}, wg = Vector{Float64,1}(undef,3) :: Vector{Float64,1}, phi = Vector{Float64,1}(undef,3) :: Vector{Float64,1})
 
     # loop through particles
     for k = 1:length(x)
@@ -55,26 +55,28 @@ function MPSO_particle_dynamics_full_state(x :: ArrayOfVecs, w, a, Plx, Pgx, opt
         #update the attitude portion of the particles (assumes quaternion attitudes)
 
         # calcualte the particle angular velocities that take the particle to the local and global best solutions (Plx and Plg)
-        wl = qdq2w(view(x[k],1:4),view(Plx[k],1:4) - view(x[k],1:4))
-        wg = qdq2w(view(x[k],1:4), view(Pgx[k],1:4) - view(x[k],1:4))
+        wl[:] = qdq2w(view(x[k],1:4), view(Plx[k],1:4) - view(x[k],1:4), wl)
+        wg[:] = qdq2w(view(x[k],1:4), view(Pgx[k],1:4) - view(x[k],1:4), wg)
 
         # compute the weighted sum of angular velocities for the particle
         for j = 1:3
-            w[k][j] = a*w[k][j] + r[1]*(opt.bl)*wl[j] + r[2]*(opt.bg)*wg[j]
+            w[k][j] = a*w[k][j] + r[1]*(bl)*wl[j] + r[2]*(bg)*wg[j]
         end
 
         # update the particle positions using quaternion propogation
         if norm(view(w[k],1:3)) > 0
-            x[k][1:4] = qPropDisc(view(w[k],1:3), view(x[k],1:4),1)
+            # qPropDisc!(view(w[k],1:3), view(x[k],1:4), 1, phi, x[k][1:4])
+            x[k][1:4] = qPropDisc(view(w[k],1:3), view(x[k],1:4), 1, phi, x[k][1:4])
         end
 
         # update the velocity portion of the particles
-        for j = 1:3
+        for j = 4:6
             # calcualte the velocity
-            w[k][j] = a*w[k][j] + r[1]*(opt.bl)*(Plx[k][j+4] - x[k][j+4]) +
-             r[2]*(opt.bg)*(Pgx[k][j+4] - x[k][j+4])
+            w[k][j] = a*w[k][j] + r[1]*(bl)*(Plx[k][j+1] - x[k][j+1]) +
+             r[2]*(bg)*(Pgx[k][j+1] - x[k][j+1])
             # update the particle positions
-            x[k][j+4] += w[k][j]
+            x[k][j+1] += w[k][j]
+
         end
     end
     return x, w

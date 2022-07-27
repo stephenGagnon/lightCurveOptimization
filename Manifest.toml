@@ -517,9 +517,8 @@ uuid = "7493c2ef-4a11-4f18-aeab-b8ca9ae8f56a"
 version = "0.1.0"
 
 [[lightCurveModeling]]
-git-tree-sha1 = "672ed781c0fabe614e08f80c5884e3626bff98ad"
-repo-rev = "master"
-repo-url = "/Users/stephengagnon/.julia/dev/lightCurveModeling"
+deps = ["LinearAlgebra", "attitudeFunctions"]
+path = "/Users/stephengagnon/.julia/dev/lightCurveModeling"
 uuid = "bbb4d786-ea76-4613-b8bd-e0066326f386"
 version = "0.1.0"
 

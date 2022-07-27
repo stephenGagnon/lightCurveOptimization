@@ -1,4 +1,4 @@
-function _GBcleanup(trueState, LMprob, options, clxOpt, clfOpt, optimizer, maxEval = 30, maxTime = .01)
+function _GBcleanup(trueState, LMprob, options, clxOpt, clfOpt, optimizer, maxEval = 150, maxTime = .01)
     # need to fix this to accomodate full state ###################
     if LMprob.fullState
         n = 6
