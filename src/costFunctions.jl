@@ -1,4 +1,4 @@
-function costFuncGen(trueState :: Vector{Float64}, prob :: LMoptimizationProblem, Parameterization = quaternion, includeGrad = false :: Bool)
+function costFuncGen(trueState :: Vector{Float64}, prob :: LMoptimizationProblem, Parameterization = quaternion, includeGrad = false :: Bool; preAllocate = false)
 
     # number of sequential observations for each observer
     s = 3
@@ -23,6 +23,9 @@ function costFuncGen(trueState :: Vector{Float64}, prob :: LMoptimizationProblem
 
     dt = deepcopy(prob.dt)
     delta = deepcopy(prob.delta)
+
+    obsNo = scen.obsNo
+    binNo = length(obj.Rdiff[1])
 
 
     # consider different parameterizations of attitude
@@ -77,7 +80,7 @@ function costFuncGen(trueState :: Vector{Float64}, prob :: LMoptimizationProblem
         # add noise if appropriate
         if prob.noise
             for i = 1:s
-                Ftrue[i]  += rand(Normal(prob.mean,prob.std),scen.obsNo)
+                Ftrue[i]  += rand(Normal(prob.mean,prob.std), obsNo*binNo)
             end
         end
 
@@ -86,18 +89,21 @@ function costFuncGen(trueState :: Vector{Float64}, prob :: LMoptimizationProblem
             return forwardDiffWrapper(func, n)
         else
             # create cost function
-            # pre Allocate arrays for temporary variables inside cost function
-            usun = Array{Float64,1}(undef,3)
-            uobst = Array{Array{Float64,1},1}(undef, scen.obsNo)
-            for i = 1:scen.obsNo
-                uobst[i] = Array{Float64,1}(undef,3)
+            if preAllocate
+                # pre Allocate arrays for temporary variables inside cost function
+                usun = Array{Float64,1}(undef, 3)
+                uobst = Array{Array{Float64,1},1}(undef, scen.obsNo)
+                for i = 1:scen.obsNo
+                    uobst[i] = Array{Float64,1}(undef, 3)
+                end
+                Ftotal = Array{Float64,1}(undef, obsNo*binNo)
+                uh = Array{Float64,1}(undef, 3)
+                xvec = Array{Float64,1}(undef, m)
+            
+                func = (x::Vector{Float64}) -> LMC_sequential_preAlloc(x::Vector{Float64}, nvecs, uvecs, vvecs, Areas, nu, nv, Rdiff, Rspec, sunVec, obsVecs, d, C, propFunc, rotFunc, dt, delta, m::Int64, n::Int64, Ftrue::Array{Array{Float64,1},1}, usun::Vector{Float64}, uobst::Array{Array{Float64,1},1}, Ftotal::Vector{Float64}, uh::Vector{Float64}, xvec::Vector{Float64})::Float64
+            else
+                func = (x) -> LMC_sequential(x, obj.nvecs, obj.uvecs, obj.vvecs, obj.Areas, obj.nu, obj.nv, obj.Rdiff, obj.Rspec, scen.sunVec, scen.obsVecs, scen.d, scen.C, propFunc, rotFunc, prob.dt, prob.delta, m, n, Ftrue)
             end
-            Ftotal = Array{Float64,1}(undef,scen.obsNo)
-            uh = Array{Float64,1}(undef,3)
-            xvec = Array{Float64,1}(undef,m)
-
-            func = (x :: Vector{Float64}) -> LMC_sequential_preAlloc(x :: Vector{Float64}, nvecs, uvecs, vvecs, Areas, nu, nv, Rdiff, Rspec, sunVec, obsVecs, d, C, propFunc, rotFunc, dt, delta, m :: Int64, n :: Int64, Ftrue :: Array{Array{Float64,1},1}, usun :: Vector{Float64}, uobst :: Array{Array{Float64,1},1}, Ftotal :: Vector{Float64}, uh :: Vector{Float64}, xvec :: Vector{Float64}) :: Float64
-
             return func
         end
 
@@ -111,7 +117,7 @@ function costFuncGen(trueState :: Vector{Float64}, prob :: LMoptimizationProblem
 
         # aadd noise if appropriate
         if prob.noise
-            Fnoise = rand(Normal(prob.mean,prob.std),scen.obsNo)
+            Fnoise = rand(Normal(prob.mean,prob.std), obsNo*binNo)
             Ftrue += Fnoise
         end
 
@@ -173,7 +179,7 @@ function costFuncGenPSO(trueState :: Vector{T}, prob :: LMoptimizationProblem, n
     end
 end
 
-function LMC_sequential_preAlloc(x :: Vector{Float64}, un :: Vector{Vector{Float64}}, uu :: Vector{Vector{Float64}}, uv :: Vector{Vector{Float64}}, Area :: Vector{Float64}, nu :: Vector{Float64}, nv :: Vector{Float64}, Rdiff :: Vector{Float64}, Rspec :: Vector{Float64}, usun :: Vector{Float64}, uobs :: Vector{Vector{Float64}}, d :: Vector{Float64}, C :: Float64, propFunc :: Function, rotFunc :: Function, dt :: Float64, delta :: Float64, m :: Int64, n :: Int64, Ftrue :: Vector{Vector{Float64}}, usunPA :: Vector{Float64}, uobstPA :: Vector{Vector{Float64}}, Ftotal :: Vector{Float64}, uh :: Vector{Float64}, xvec :: Vector{Float64})
+function LMC_sequential_preAlloc(x :: Vector{Float64}, un :: Vector{Vector{Float64}}, uu :: Vector{Vector{Float64}}, uv :: Vector{Vector{Float64}}, Area :: Vector{Float64}, nu :: Vector{Float64}, nv :: Vector{Float64}, Rdiff, Rspec, usun :: Vector{Float64}, uobs :: Vector{Vector{Float64}}, d :: Vector{Float64}, C :: Float64, propFunc :: Function, rotFunc :: Function, dt :: Float64, delta :: Float64, m :: Int64, n :: Int64, Ftrue :: Vector{Vector{Float64}}, usunPA :: Vector{Float64}, uobstPA :: Vector{Vector{Float64}}, Ftotal :: Vector{Float64}, uh :: Vector{Float64}, xvec :: Vector{Float64})
 
     #
     # xvec[:] = x[1:m]
@@ -204,27 +210,16 @@ function LMC_sequential(x, un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun, uobs, d
         xvec[:] = propFunc(x[m+1:n], xvec, dt)
         out += _LMC(xvec, un, uu, uv ,Area ,nu ,nv ,Rdiff ,Rspec ,usun ,uobs ,d , C, Ftrue[i], rotFunc, delta)
     end
-    # out = 0.0
-    # xvec = Array{typeof(x[1]),1}(undef,m)
-    # for i = 1:3
-    #     if i == 1
-    #         xvec[:] = x[1:m]
-    #     else
-    #         xvec[:] = propFunc(x[m+1:n], xvec, dt)
-    #     end
-    #
-    #     out += _LMC(xvec, un, uu, uv ,Area ,nu ,nv ,Rdiff ,Rspec ,usun ,uobs ,d , C, Ftrue[i], rotFunc, delta)
-    # end
 
     return out
 end
 
-function _LMC(att :: anyAttitude, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs, Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff :: MatOrVec, Rspec :: MatOrVec, usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Number, Ftrue :: Vec, rotFunc :: Function, delta :: Float64)
+function _LMC(att :: anyAttitude, un :: MatOrVecs, uu :: MatOrVecs, uv :: MatOrVecs, Area :: MatOrVec, nu :: MatOrVec, nv :: MatOrVec, Rdiff, Rspec, usun :: Vec, uobs :: MatOrVecs, d :: MatOrVec, C :: Number, Ftrue :: Vec, rotFunc :: Function, delta :: Float64)
 
     return sum(((_Fobs(att,un,uu,uv,Area,nu,nv,Rdiff,Rspec,usun,uobs,d,C,rotFunc) - Ftrue)./(Ftrue .+ delta)).^2)
 end
 
-function _LMC_preAlloc(att :: anyAttitude, un :: Vector{Vector{Float64}}, uu :: Vector{Vector{Float64}}, uv :: Vector{Vector{Float64}}, Area :: Vector{Float64}, nu :: Vector{Float64}, nv :: Vector{Float64}, Rdiff :: Vector{Float64}, Rspec :: Vector{Float64}, usun :: Vector{Float64}, uobs :: Vector{Vector{Float64}}, d :: Vector{Float64}, C :: Number, Ftrue :: Vector{Float64}, rotFunc :: Function, delta :: Float64, usunPA :: Vector{Float64}, uobstPA :: Vector{Vector{Float64}}, Ftotal :: Vector{Float64}, uh :: Vector{Float64})
+function _LMC_preAlloc(att :: anyAttitude, un :: Vector{Vector{Float64}}, uu :: Vector{Vector{Float64}}, uv :: Vector{Vector{Float64}}, Area :: Vector{Float64}, nu :: Vector{Float64}, nv :: Vector{Float64}, Rdiff, Rspec, usun :: Vector{Float64}, uobs :: Vector{Vector{Float64}}, d :: Vector{Float64}, C :: Number, Ftrue :: Vector{Float64}, rotFunc :: Function, delta :: Float64, usunPA :: Vector{Float64}, uobstPA :: Vector{Vector{Float64}}, Ftotal :: Vector{Float64}, uh :: Vector{Float64})
 
     Ftotal = _Fobs_preAlloc(att, un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun, uobs, d, C, rotFunc, usunPA, uobstPA, Ftotal, uh)
     out = 0
