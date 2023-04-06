@@ -36,9 +36,21 @@ function MPSO_particle_dynamics(x :: Array{Array{Float64,1},1}, w, a, Plx, Pgx, 
         # update the particle positions using quaternion propogation
         if norm(w[j]) > 0
             x[j] = qPropDisc(w[j],x[j],1)
+            # x[j] = qPropDiscAlt(w[j],x[j],1)
         else
             x[j] = x[j]
         end
+    end
+
+    return x, w
+end
+
+function MPSO_particle_dynamics_Alt(x :: Array{Array{Float64,1},1}, w, a, Plx, Pgx, opt)
+
+    for j = 1:length(x)
+        r = rand(1,2)
+
+        x[j] = quaternionAverage([x[j],Plx[j],Pgx[j]],[a,r[1]*(opt.bl),r[2]*(opt.bg)])
     end
 
     return x, w
@@ -66,7 +78,8 @@ function MPSO_particle_dynamics_full_state(x :: Array{Array{Float64,1},1}, w :: 
         # update the particle positions using quaternion propogation
         if norm(view(w[k],1:3)) > 0
             # qPropDisc!(view(w[k],1:3), view(x[k],1:4), 1, phi, x[k][1:4])
-            x[k][1:4] = qPropDisc(view(w[k],1:3), view(x[k],1:4), 1, phi, x[k][1:4])
+            # x[k][1:4] = qPropDisc(view(w[k],1:3), view(x[k],1:4), 1, phi, x[k][1:4])
+            x[k][1:4] = qPropDiscAlt(view(w[k],1:3), view(x[k],1:4), 1, x[k][1:4])
         end
 
         # update the velocity portion of the particles

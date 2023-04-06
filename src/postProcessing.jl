@@ -1,4 +1,5 @@
-function _GBcleanup(trueState, LMprob, options, clxOpt, clfOpt, optimizer, maxEval = 150, maxTime = .01)
+function _GBcleanup(trueState, LMprob, options, clxOpt, clfOpt, optimizer, maxEval=150, maxTime=0.01)
+
     # need to fix this to accomodate full state ###################
     if LMprob.fullState
         n = 6
@@ -7,9 +8,10 @@ function _GBcleanup(trueState, LMprob, options, clxOpt, clfOpt, optimizer, maxEv
             tsp = Array{Float64,1}(undef, 6)
             tsp[1:3] = q2p(trueState[1:4])
             tsp[4:6] = trueState[5:7]
-            states = Array{typeof(trueState[1]),2}(undef, 6, size(clxOpt,2))
-            states[1:3,:] = hcat([q2p(c) for c in eachcol(clxOpt[1:4,:])]...)
-            states[4:6,:] = clxOpt[5:7,:]
+            states = Array{Array{Float64,1},1}(undef, length(clxOpt))
+            for i = 1:lastindex(states)
+                states[i] = vcat(q2p(clxOpt[i][1:4]), clxOpt[i][5:7])
+            end
         else
             tsp = trueState
             states = clxOpt
@@ -20,10 +22,10 @@ function _GBcleanup(trueState, LMprob, options, clxOpt, clfOpt, optimizer, maxEv
         end
     else
         n = 3
-        if options.Parameterization== quaternion
+        if options.Parameterization == quaternion
             tsp = q2p(trueState)
-            states = Array{typeof(trueState[1]),2}(undef, 6, size(clxOpt,2))
-            states = hcat([q2p(c) for c in eachcol(clxOpt)]...)
+            states = Array{typeof(trueState[1]),1}(undef, length(clxOpt))
+            states = q2p.(clxOpt)
         else
             tsp = trueState
             states = clxOpt
@@ -36,55 +38,104 @@ function _GBcleanup(trueState, LMprob, options, clxOpt, clfOpt, optimizer, maxEv
     end
 
     # generate optimizer object with appropriate cost, parameters and bounds
-    opt = Opt(optimizer,n)
-    opt.min_objective = costFuncGen(tsp, LMprob, MRP, true)
+    opt = Opt(optimizer, n)
+
+    # create appropriate upper and lower bounds 
     if LMprob.fullState
-        opt.upper_bounds = vcat(ones(3), 1.2*LMprob.angularVelocityBound.*ones(3))
+        opt.upper_bounds = vcat(ones(3), 1.2 * LMprob.angularVelocityBound .* ones(3))
         opt.lower_bounds = -1 .* opt.upper_bounds
     else
         opt.upper_bounds = ones(3)
         opt.lower_bounds = -1 .* opt.upper_bounds
     end
+    # set maximum cost function evaluations and run time
     opt.maxeval = maxEval
-    opt.maxtime = maxTime
+    # opt.maxtime = maxTime
 
     # initialize array to hold the optimized states
     tempX = similar(states)
     clfOpt_clean = similar(clfOpt)
     clxOpt_clean = similar(clxOpt)
 
-    for i = 1:size(clxOpt,2)
+    if options.saveFullHist
+        tempX = similar(states)
+        clxOptHist_clean = Vector{Vector{Vector{Float64}}}(undef, lastindex(clxOpt))
+        clfOptHist_clean = Vector{Vector{Float64}}(undef, lastindex(clxOpt))
+    end
+
+    for i = 1:lastindex(clxOpt)
+    
+        # if user has requested to store the full history of the optimization, create a cost function that stores the value of the state and the cost function on each iteration
+        if options.saveFullHist
+            f = forwardDiffWrapper(costFuncGen(tsp, LMprob, MRP, false), 6)
+            fHistTemp = Float64[]
+            xHistTemp = Vector{Float64}[]
+            costFunc = (x, grad) ->
+                begin
+                    fval = f(x, grad)
+                    push!(fHistTemp, fval)
+                    push!(xHistTemp, deepcopy(x))
+                    return fval
+                end
+            opt.min_objective = costFunc
+        else
+            # create a standard gradient based cost function for NLopt
+            opt.min_objective = costFuncGen(tsp, LMprob, MRP, true)
+        end
+
         # iterate through each solution
-        xinit = states[:,i]
+        xinit = states[i]
         # switch to the shadow set if the norm of the MRP is outside of the unit sphere
         if norm(xinit[1:3]) > 1.0
             xinit[1:3] = sMRP(xinit[1:3])
         end
-
+    
         # run the optimization
-        (minf, minx, ret) = optimize(opt,xinit)
-        # store the optimized values
-        tempX[:,i] = minx
-        clfOpt_clean[i] = minf
-    end
-
-    # transform back to quaternions if necessary
-    if LMprob.fullState
+        (minf, minx, ret) = optimize(opt, xinit)
+    
         # convert back to quaternions if necessary
         if options.Parameterization == quaternion
-            clxOpt_clean[1:4,:] = hcat([p2q(c) for c in eachcol(tempX[1:3,:])]...)
-            clxOpt_clean[5:7,:] = tempX[4:6,:]
+            # transform back to quaternions if necessary
+            if LMprob.fullState
+    
+                # clxOpt_clean[1:4,:] = hcat([p2q(c) for c in eachcol(tempX[1:3,:])]...)
+                # clxOpt_clean[5:7,:] = tempX[4:6,:]
+                clxOpt_clean[i] = vcat(p2q(minx[1:3]), minx[4:6])
+                clfOpt_clean[i] = minf
+    
+                if options.saveFullHist
+                    xTemp = Array{Array{Float64,1},1}(undef, lastindex(xHistTemp))
+                    temp = Array{Float64,1}(undef, 7)
+                    for j = 1:lastindex(xHistTemp)
+                        temp = vcat(p2q(xHistTemp[j][1:3]), xHistTemp[j][4:6])
+                        xTemp[j] = deepcopy(temp)
+                    end
+                    clfOptHist_clean[i] = deepcopy(fHistTemp)
+                    clxOptHist_clean[i] = deepcopy(xTemp)
+                end
+            else
+                clxOpt_clean[i] = p2q(minx)
+                clfOpt_clean[i] = minf
+                if options.saveFullHist
+                    clfOptHist_clean[i] = deepcopy(fHistTemp)
+                    clxOptHist_clean[i] = deepcopy(p2q.(xHistTemp))
+                end
+            end
         else
-            clxOpt_clean = tempX
-        end
-    else
-        if options.Parameterization == quaternion
-            clxOpt_clean = hcat([p2q(c) for c in eachcol(tempX)]...)
-        else
-            clxOpt_clean = tempX
+            clxOpt_clean[i] = minx
+            clfOpt_clean[i] = minf
+            if options.saveFullHist
+                clfOptHist_clean[i] = deepcopy(fHistTemp)
+                clxOptHist_clean[i] = deepcopy(xHistTemp)
+            end
         end
     end
-    return clxOpt_clean, clfOpt_clean
+
+    if options.saveFullHist
+        return clxOpt_clean, clfOpt_clean, clxOptHist_clean, clfOptHist_clean
+    else
+        return clxOpt_clean, clfOpt_clean, nothing, nothing
+    end
 end
 
 function checkConvergence(OptResults; attitudeThreshold = 5, angVelThreshold = .01)
@@ -109,7 +160,7 @@ function checkConvergence(OptResults; attitudeThreshold = 5, angVelThreshold = .
             clOptErr = Array{Float64,1}(undef,length(OptResults))
         end
 
-        for i = 1:length(OptResults)
+        for i = 1:lastindex(OptResults)
 
             (optConv[i], optErr[i], clOptConv[i], clOptErr[i]) = _checkConvergence(OptResults[i], attitudeThreshold, angVelThreshold)
 
@@ -126,17 +177,17 @@ function _checkConvergence(OptResults, attitudeThreshold, angVelThreshold)
 
         if OptResults.problem.fullState
             # change this to handle full state returns
-            convTemp = Array{Array{Bool,1},1}(undef, size(OptResults.results.clusterxOptHist[end],2))
-            errTemp = Array{Array{Float64,1},1}(undef, size(OptResults.results.clusterxOptHist[end],2))
+            convTemp = Array{Array{Bool,1},1}(undef, length(OptResults.results.clxOpt))
+            errTemp = Array{Array{Float64,1},1}(undef, length(OptResults.results.clxOpt))
         else
-            convTemp = Array{Bool,1}(undef, size(OptResults.results.clusterxOptHist[end],2))
-            errTemp = Array{Float64,1}(undef, size(OptResults.results.clusterxOptHist[end],2))
+            convTemp = Array{Bool,1}(undef, length(OptResults.results.clxOpt))
+            errTemp = Array{Float64,1}(undef, length(OptResults.results.clxOpt))
         end
 
         # replace this with function
-        for j = 1:size(OptResults.results.clusterxOptHist[end],2)
+        for j = 1:lastindex(OptResults.results.clxOpt)
 
-            convTemp[j], errTemp[j] = _checkStateConvergence(OptResults.results.clusterxOptHist[end][:,j], OptResults.trueState, OptResults.problem.fullState, attitudeThreshold, angVelThreshold)
+            convTemp[j], errTemp[j] = _checkStateConvergence(OptResults.results.clxOpt[j], OptResults.trueState, OptResults.problem.fullState, attitudeThreshold, angVelThreshold)
 
         end
         # need to fix this to handle att + angvel
@@ -154,7 +205,8 @@ function _checkConvergence(OptResults, attitudeThreshold, angVelThreshold)
         return optConv, optErr, clOptConv, clOptErr
 
     elseif typeof(OptResults.results) <: GB_results
-        return  _checkAttConvergence(OptResults.results.xOpt, OptResults.trueState, attitudeThreshold)
+
+        return _checkStateConvergence(OptResults.results.xOpt, OptResults.trueState, OptResults.problem.fullState, attitudeThreshold, angVelThreshold)
 
     elseif typeof(OptResults.results) <: EGB_results
 
@@ -209,7 +261,7 @@ function _checkStateConvergence(xOpt, trueState, isFullState, attitudeThreshold,
     end
 end
 
-function _checkAttConvergence(AOpt :: Union{quaternion,DCM,MRP,GRP}, trueState :: Vec, attitudeThreshold)
+function _checkAttConvergence(AOpt :: Union{quaternion,DCM,MRP,GRP}, trueState :: Vector, attitudeThreshold)
 
     if typeof(AOpt) == quaternion
         qOpt = AOpt
@@ -222,10 +274,10 @@ function _checkAttConvergence(AOpt :: Union{quaternion,DCM,MRP,GRP}, trueState :
     q = Array{Float64,1}(undef,4)
     q[1:3] = qOpt.v
     q[4] = qOpt.s
-    return _checkAttConvergence(q, trueState, attitudeThreshold = 5)
+    return _checkAttConvergence(q, trueState, attitudeThreshold=attitudeThreshold)
 end
 
-function _checkAttConvergence(qOpt_in :: Vec, trueState :: Vec, attitudeThreshold)
+function _checkAttConvergence(qOpt_in :: Vector, trueState :: Vector, attitudeThreshold)
 
     if size(trueState) == (4,)
         trueAtt = trueState
@@ -245,6 +297,7 @@ function _checkAttConvergence(qOpt_in :: Vec, trueState :: Vec, attitudeThreshol
     return optConv, optErrAng
 end
 
+# not updated for new types
 function Convert_PSO_results(results :: PSO_results, attType, a = 1,f = 1)
 
     if typeof(results.xHist) != Nothing
