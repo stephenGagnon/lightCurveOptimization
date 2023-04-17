@@ -17,7 +17,7 @@ function PSO_LM(trueState::Vector, LMprob::LMoptimizationProblem, options::LMopt
         if LMprob.fullState
             w_init = randomBoundedAngularVelocity(options.optimizationParams.N, LMprob.angularVelocityBound)
 
-            xinit = [[attinit[i]; w_init[i]] for i in 1:eachindex(attinit)]
+            xinit = [[attinit[i]; w_init[i]] for i in eachindex(attinit)]
         else
             xinit = attinit
         end
@@ -50,7 +50,7 @@ function PSO_LM(trueState::Vector, LMprob::LMoptimizationProblem, options::LMopt
     # create an anonymous function for particle propogation based on the user-specified cluster type
     if any(options.algorithm .== (:PSO_cluster))
         # standard additive particle dynamics where particles are incremented by a velocity
-        particleDynamics = (x, v, a, Plx, Pgx, opt) -> (x, v) = PSO_particle_dynamics(x, v, a, Plx, Pgx, opt)
+        particleDynamics = (x, v, a, Plx, Pgx) -> (x, v) = PSO_particle_dynamics(x, v, a, Plx, Pgx, options.optimizationParams)
 
     elseif any(options.algorithm .== (:MPSO, :MPSO_AVC))
 
@@ -125,7 +125,7 @@ function PSO_LM(trueState::Vector, LMprob::LMoptimizationProblem, options::LMopt
 
 
     if options.GB_cleanup == true
-        maxEval = 40
+        maxEval = 150
         # run gradient based optimization on each of the cluster best solutions
         (clxOpt_clean, clfOpt_clean, clxOptHist_clean, clfOptHist_clean) = _GBcleanup(trueState, LMprob, options, clxOpt, clfOpt, :LD_SLSQP, maxEval, 1)
 
@@ -156,20 +156,19 @@ function PSO_LM(trueState::Vector, LMprob::LMoptimizationProblem, options::LMopt
     # return PSO_results type
     if options.saveFullHist
 
-        options.saveFullHist
-        fOptVals = Vector{Float64}(undef, maxEval)
-        xOptVals = Vector{Vector{Float64}}(undef, maxEval)
-        fOptVals .= Inf
-        for j = 1:options.optimizationParams.Ncl
-            for k = 1:length(clfOptHist_clean[j])
-                if clfOptHist_clean[j][k] < fOptVals[k]
-                    fOptVals[k] = deepcopy(clfOptHist_clean[j][k])
-                    xOptVals[k] = deepcopy(clxOptHist_clean[j][k])
+        if options.GB_cleanup == true
+            fOptVals = Vector{Float64}(undef, maxEval)
+            xOptVals = Vector{Vector{Float64}}(undef, maxEval)
+            fOptVals .= Inf
+            for j = 1:options.optimizationParams.Ncl
+                for k = 1:length(clfOptHist_clean[j])
+                    if clfOptHist_clean[j][k] < fOptVals[k]
+                        fOptVals[k] = deepcopy(clfOptHist_clean[j][k])
+                        xOptVals[k] = deepcopy(clxOptHist_clean[j][k])
+                    end
                 end
-            end
-        end
-        # xOptHist = vcat(xOptHist, xOptVals)
-        # fOptHist = vcat(fOptHist, fOptVals)
+            end 
+        end     
 
         return PSO_results(xOpt, fOpt, clxOpt, clfOpt), (xHist, fHist, xOptHist, fOptHist, clxOptHist, clfOptHist)
     else

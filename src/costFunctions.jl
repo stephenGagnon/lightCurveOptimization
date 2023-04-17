@@ -1,7 +1,7 @@
 function costFuncGen(trueState :: Vector{Float64}, prob :: LMoptimizationProblem, Parameterization = quaternion, includeGrad = false :: Bool; preAllocate = false)
 
     # number of sequential observations for each observer
-    s = 3
+    s = 5
     # extract some parameters to use when generating a vector rotation function
     a = prob.a
     f = prob.f

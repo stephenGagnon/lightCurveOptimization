@@ -218,12 +218,17 @@ struct LMoptimizationOptions
 
     function LMoptimizationOptions(; vectorize=false, algorithm=:MPSO, Parameterization=quaternion, clusteringType=:kmeans, initMethod=:random, initVals=[0.0; 0; 0; 1], optimizationParams=PSO_parameters(), saveFullHist=false, tol=1e-6, abstol=1e-6, GB_cleanup=false)
 
-        if any(algorithm .== (:MPSO, :MPSO_VGC, :MPSO_NVC, :PSO_cluster, :MPSO_full_state))
+        if any(algorithm .== (:MPSO, :MPSO_VGC, :MPSO_NVC, :MPSO_full_state))
             if typeof(optimizationParams) !== PSO_parameters
                 optimizationParams = PSO_parameters()
             end
 
             Parameterization = quaternion
+        elseif any(algorithm .== :PSO_cluster)
+            if typeof(optimizationParams) !== PSO_parameters
+                optimizationParams = PSO_parameters()
+            end
+
         elseif any(algorithm .== (:LD_SLSQP))
 
             if typeof(optimizationParams) !== GB_parameters

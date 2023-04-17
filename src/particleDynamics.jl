@@ -16,6 +16,9 @@ function PSO_particle_dynamics(x :: Array{Array{Float64,1},1}, v, a, Plx, Pgx, o
         if norm(x[k]) > opt.Lim
             x[k] = opt.Lim.*(x[k]./norm(x[k]))
         end
+        # if norm(x[k][1:3]) > 1
+        #     x[k][1:3] = sMRP(x[k][1:3])
+        # end
     end
     return x, v
 end
