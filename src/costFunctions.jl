@@ -27,7 +27,6 @@ function costFuncGen(trueState :: Vector{Float64}, prob :: LMoptimizationProblem
     obsNo = scen.obsNo
     binNo = length(obj.Rdiff[1])
 
-
     # consider different parameterizations of attitude
     if (Parameterization == MRP) | (Parameterization == GRP)
         # dimension of attitude state
@@ -140,54 +139,51 @@ function costFuncGenPSO(trueState :: Vector{T}, prob :: LMoptimizationProblem, n
 
     if includeGrad
         if !vectorize
-            return (x, grad) -> begin
-                                    cost = Array{T,1}(undef,n)
-                                    for i = 1:n
-                                        cost[i] = func(x[i], grad[i])
-                                    end
-                                    return cost
-                                end
+            return (x, grad) -> 
+            begin
+                cost = Array{T,1}(undef,n)
+                for i = 1:n
+                    cost[i] = func(x[i], grad[i])
+                end
+                return cost
+            end
 
         else
-            return (x, grad) -> begin
-                                    cost = Array{T,1}(undef,n)
-                                    for i = 1:n
-                                        cost[i] = func(view(x,:,i), view(grad,:,i))
-                                    end
-                                    return cost
-                                end
+            return (x, grad) -> 
+            begin
+                cost = Array{T,1}(undef,n)
+                for i = 1:n
+                    cost[i] = func(view(x,:,i), view(grad,:,i))
+                end
+                return cost
+            end
         end
     else
         if !vectorize
-            return (x) -> begin
-                            cost = Array{T,1}(undef,n)
-                            for i = 1:n
-                                cost[i] = func(x[i])
-                            end
-                            return cost
-                        end
+            return (x) -> 
+            begin
+                cost = Array{T,1}(undef,n)
+                for i = 1:n
+                    cost[i] = func(x[i])
+                end
+                return cost
+            end
 
         else
-            return (x) -> begin
-                            cost = Array{T,1}(undef,n)
-                            for i = 1:n
-                                cost[i] = func(view(x,:,i))
-                            end
-                            return cost
-                        end
+            return (x) -> 
+            begin
+                cost = Array{T,1}(undef,n)
+                for i = 1:n
+                    cost[i] = func(view(x,:,i))
+                end
+                return cost
+            end
         end
     end
 end
 
 function LMC_sequential_preAlloc(x :: Vector{Float64}, un :: Vector{Vector{Float64}}, uu :: Vector{Vector{Float64}}, uv :: Vector{Vector{Float64}}, Area :: Vector{Float64}, nu :: Vector{Float64}, nv :: Vector{Float64}, Rdiff, Rspec, usun :: Vector{Float64}, uobs :: Vector{Vector{Float64}}, d :: Vector{Float64}, C :: Float64, propFunc :: Function, rotFunc :: Function, dt :: Float64, delta :: Float64, m :: Int64, n :: Int64, Ftrue :: Vector{Vector{Float64}}, usunPA :: Vector{Float64}, uobstPA :: Vector{Vector{Float64}}, Ftotal :: Vector{Float64}, uh :: Vector{Float64}, xvec :: Vector{Float64})
 
-    #
-    # xvec[:] = x[1:m]
-    # out = _LMC_preAlloc(x[1:m], un, uu, uv ,Area ,nu ,nv ,Rdiff ,Rspec ,usun ,uobs ,d , C, Ftrue[1], rotFunc, delta, usunPA, uobstPA, Ftotal, uh) :: Float64
-    # for i = 2:3
-    #     xvec[:] = propFunc(x[m+1:n], xvec, dt)
-    #     out += _LMC_preAlloc(xvec, un, uu, uv ,Area ,nu ,nv ,Rdiff ,Rspec ,usun ,uobs ,d , C, Ftrue[i], rotFunc, delta, usunPA, uobstPA, Ftotal, uh) :: Float64
-    # end
     out = 0.0
     for i = 1:3
         if i == 1
@@ -223,7 +219,7 @@ function _LMC_preAlloc(att :: anyAttitude, un :: Vector{Vector{Float64}}, uu :: 
 
     Ftotal = _Fobs_preAlloc(att, un, uu, uv, Area, nu, nv, Rdiff, Rspec, usun, uobs, d, C, rotFunc, usunPA, uobstPA, Ftotal, uh)
     out = 0
-    for i = 1:length(Ftotal)
+    for i = eachindex(Ftotal)
         out += ((Ftotal[i] - Ftrue[i])/(Ftrue[i] + delta))^2
     end
     return out

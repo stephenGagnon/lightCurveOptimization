@@ -1,38 +1,3 @@
-function forwardDiffWrapper(func, dim)
-    result = DiffResults.GradientResult(Array{Float64,1}(undef,dim))
-    func_out = (x, grad :: Vector) ->
-    begin
-        if length(grad) > 0
-            # @infiltrate
-            result = ForwardDiff.gradient!(result, func, x)
-            fval = DiffResults.value(result)
-            grad[:] = DiffResults.gradient(result)
-        else
-            fval = func(x)
-        end
-        return fval
-    end
-    return func_out
-end
-
-function forwardDiffWrapper(func, dim, storeCost)
-    result = DiffResults.GradientResult(Array{Float64,1}(undef, dim))
-    func_out = (x, grad::Vector) ->
-        begin
-            if length(grad) > 0
-                # @infiltrate
-                result = ForwardDiff.gradient!(result, func, x)
-                fval = DiffResults.value(result)
-                push!(storeCost,fval)
-                grad[:] = DiffResults.gradient(result)
-            else
-                fval = func(x)
-            end
-            return fval
-        end
-    return func_out
-end
-
 # in progress
 function plotOptResults(results, qtrue, a=1, f=1)
 

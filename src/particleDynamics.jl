@@ -28,8 +28,8 @@ function MPSO_particle_dynamics(x :: Array{Array{Float64,1},1}, w, a, Plx, Pgx, 
     for j = 1:length(x)
         r = rand(1,2)
         # calcualte the particle angular velocities that take the particle to the local and global best solutions (Plx and Plg)
-        wl = qdq2w(x[j],Plx[j] - x[j])
-        wg = qdq2w(x[j],Pgx[j] - x[j])
+        wl = qdq2w(Plx[j],Plx[j] - x[j])
+        wg = qdq2w(Pgx[j],Pgx[j] - x[j])
 
         # compute the weighted sum of angular velocities for the particle
         for k = 1:3
@@ -40,8 +40,6 @@ function MPSO_particle_dynamics(x :: Array{Array{Float64,1},1}, w, a, Plx, Pgx, 
         if norm(w[j]) > 0
             x[j] = qPropDisc(w[j],x[j],1)
             # x[j] = qPropDiscAlt(w[j],x[j],1)
-        else
-            x[j] = x[j]
         end
     end
 
@@ -52,8 +50,19 @@ function MPSO_particle_dynamics_Alt(x :: Array{Array{Float64,1},1}, w, a, Plx, P
 
     for j = 1:length(x)
         r = rand(1,2)
-
-        x[j] = quaternionAverage([x[j],Plx[j],Pgx[j]],[a,r[1]*(opt.bl),r[2]*(opt.bg)])
+        # x_avg = zeros(4)
+        # try 
+           
+        # catch
+        #     @infiltrate
+        # end
+        x_avg = quaternionAverage([(-1/2).*Xi(x[j])*w[j], Plx[j], Pgx[j]],[a,r[1]*(opt.bl),r[2]*(opt.bg)])
+        w[j] = -qdq2w(x_avg,x[j])
+        if norm(w[j]) > 0
+            x[j] = qPropDisc(w[j], x[j], 1)
+        else
+            # @infiltrate
+        end
     end
 
     return x, w
@@ -70,8 +79,8 @@ function MPSO_particle_dynamics_full_state(x :: Array{Array{Float64,1},1}, w :: 
         #update the attitude portion of the particles (assumes quaternion attitudes)
 
         # calcualte the particle angular velocities that take the particle to the local and global best solutions (Plx and Plg)
-        wl[:] = qdq2w(view(x[k],1:4), view(Plx[k],1:4) - view(x[k],1:4), wl)
-        wg[:] = qdq2w(view(x[k],1:4), view(Pgx[k],1:4) - view(x[k],1:4), wg)
+        wl[:] = qdq2w(view(Plx[k],1:4), view(Plx[k],1:4) - view(x[k],1:4), wl, 1)
+        wg[:] = qdq2w(view(Pgx[k],1:4), view(Pgx[k],1:4) - view(x[k],1:4), wg, 1)
 
         # compute the weighted sum of angular velocities for the particle
         for j = 1:3
@@ -81,8 +90,8 @@ function MPSO_particle_dynamics_full_state(x :: Array{Array{Float64,1},1}, w :: 
         # update the particle positions using quaternion propogation
         if norm(view(w[k],1:3)) > 0
             # qPropDisc!(view(w[k],1:3), view(x[k],1:4), 1, phi, x[k][1:4])
-            # x[k][1:4] = qPropDisc(view(w[k],1:3), view(x[k],1:4), 1, phi, x[k][1:4])
-            x[k][1:4] = qPropDiscAlt(view(w[k],1:3), view(x[k],1:4), 1, x[k][1:4])
+            x[k][1:4] = qPropDisc(view(w[k],1:3), view(x[k],1:4), 1, phi, x[k][1:4])
+            # x[k][1:4] = qPropDiscAlt(view(w[k],1:3), view(x[k],1:4), 1, x[k][1:4])
         end
 
         # update the velocity portion of the particles

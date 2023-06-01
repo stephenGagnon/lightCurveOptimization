@@ -64,7 +64,13 @@ function PSO_LM(trueState::Vector, LMprob::LMoptimizationProblem, options::LMopt
             # modified multiplicative particle dynamics where particles are propogated via attitude dynamcis
             particleDynamics = (x, v, a, Plx, Pgx) -> (x, v) = MPSO_particle_dynamics(x, v, a, Plx, Pgx, options.optimizationParams)
         end
-
+    elseif any(options.algorithm .== (:MPSO_Alt))
+        if LMprob.fullState
+            error("Fulls state not supported for MPSO_Alt")
+        else
+            # modified multiplicative particle dynamics where particles are propogated via attitude dynamcis
+            particleDynamics = (x, v, a, Plx, Pgx) -> (x, v) = MPSO_particle_dynamics_Alt(x, v, a, Plx, Pgx, options.optimizationParams)
+        end
     else
         error("Please Provide a valid optimization algorithm")
     end
@@ -184,7 +190,8 @@ function PSO_main(x::Array{Array{Float64,1},1}, costFunc::Function, clusterFunc:
     for i = 1:params.N
         f[i] = costFunc(x[i]::Vector{Float64})::Float64
     end
-
+    p0 = .01
+    
     # initialize variables
     # intialize best local optima in each cluster
     xopt = Array{Array{Float64,1},1}(undef, params.N)
@@ -298,6 +305,7 @@ function PSO_main(x::Array{Array{Float64,1},1}, costFunc::Function, clusterFunc:
 
         # calculate alpha using the cooling schedule
         a = params.av[1] - t[i] * (params.av[1] - params.av[2])
+        # a = 2*params.av[1]/abs(2 - )
 
         # calculate epsilon using the schedule
         epsilon = params.evec[1] - t[i] * (params.evec[1] - params.evec[2])
@@ -305,6 +313,9 @@ function PSO_main(x::Array{Array{Float64,1},1}, costFunc::Function, clusterFunc:
         # propagate the  particles forward one iteration using the particle dynamics
         (x, w) = particleDynamics(x, w, a, Plx, Pgx)
 
+        # if any(norm.(w).== 0) 
+        #     @infiltrate
+        # end
         # apply the bounding function to the particles to ensure they fall within the bounds
         x = boundFunc.(x)
 
@@ -324,6 +335,9 @@ function PSO_main(x::Array{Array{Float64,1},1}, costFunc::Function, clusterFunc:
             clusterFunc(x, params.Ncl, ind)
             cl = unique(ind)
             Ncl = length(cl)
+            if Ncl <= 1
+                @infiltrate
+            end
         end
 
         # loop through the clusters
@@ -340,9 +354,12 @@ function PSO_main(x::Array{Array{Float64,1},1}, costFunc::Function, clusterFunc:
         for k = 1:params.N
             # randomly choose to follow the local cluster best or another cluster
             # best in proportion to the user specified epsilon
-            if rand(1)[1] < epsilon || sum(k == clLeadInd) > 0 || !isassigned(xopt, ind[k])
+            if sum(k == clLeadInd) > 0
+                Pgx[k] = attitudeRoughening(xopt[clmap[k]], p = .01)
+            elseif rand(1)[1] < epsilon || !isassigned(xopt, ind[k])
                 # follow the local cluster best
                 Pgx[k] = xopt[clmap[k]]
+                # attitudeRoughening(att :: Vec, p = .001)
             else
                 # follow a random cluster best
                 Pgx[k] = xopt[1:Ncl][1:Ncl.!=clmap[k]][rand(1:Ncl-1)]
